@@ -640,8 +640,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train TRD on Rail Dataset")
 
     # 数据参数
-    parser.add_argument("--train_root", type=str, default="/data1/Leaddo_data/20260327",
-                        help="Path to training dataset (推荐用 preprocess_rail_resize.py 预处理后的目录)")
+    parser.add_argument("--train_root", type=str, default="/data1/Leaddo_data/20260327-resize512",
+                        help="Path to training dataset (推荐用已 resize 的目录，如 20260327-resize512)")
     parser.add_argument("--test_root", type=str, default="/home/root123/LF/WYM/SteelRailWay/rail_mvtec_gt_test",
                         help="Path to test dataset")
     parser.add_argument("--view_id", type=int, default=1,

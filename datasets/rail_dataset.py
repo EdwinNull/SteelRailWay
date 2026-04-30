@@ -110,6 +110,11 @@ class RailDualModalDataset(Dataset):
         self.gt_cache: Dict[str, np.ndarray] = {}
         self.depth_stats: Dict[str, tuple] = {}  # path → (mean, std) 预计算
 
+        # 自动检测数据是否已 resize：
+        # 如果 train_root 路径名包含 "-resize" 或 "_resize" 且第一张图尺寸接近 img_size，
+        # 则认为已离线 resize，跳过运行时 resize（大幅加速）
+        self.is_preresized = self._detect_preresized()
+
         # 扫描磁盘 → 拿到样本清单
         self.samples: List[Dict] = self._scan_files()
 
@@ -146,6 +151,52 @@ class RailDualModalDataset(Dataset):
     # ------------------------------------------------------------------ #
     # 文件扫描                                                            #
     # ------------------------------------------------------------------ #
+    def _detect_preresized(self) -> bool:
+        """检测训练数据是否已离线 resize 到目标尺寸。
+
+        判断依据：
+            1) train_root 路径名包含 "-resize" 或 "_resize" 或 "-512" 等标记
+            2) 第一张 RGB 图的实际尺寸与 img_size 接近（±10%）
+
+        如果满足，则 _load_rgb / _load_depth 跳过运行时 resize，直接读取。
+        """
+        if self.split == "test":
+            # 测试集通常是原始大图，不做此优化
+            return False
+
+        # 路径名启发式
+        root_lower = self.train_root.lower()
+        has_marker = any(m in root_lower for m in ["-resize", "_resize", "-512", "_512"])
+
+        if not has_marker:
+            return False
+
+        # 尝试读第一张图验证尺寸
+        try:
+            cam_dir = os.path.join(self.train_root, f"Cam{self.view_id}")
+            rgb_dir = os.path.join(cam_dir, "rgb")
+            if not os.path.isdir(rgb_dir):
+                return False
+            rgb_files = [f for f in os.listdir(rgb_dir) if f.endswith(".jpg")]
+            if not rgb_files:
+                return False
+            first = os.path.join(rgb_dir, rgb_files[0])
+            img = cv2.imread(first, cv2.IMREAD_COLOR)
+            if img is None:
+                return False
+            h, w = img.shape[:2]
+            # 允许 ±10% 误差（例如 img_size=512，实际 460~560 都算）
+            tolerance = 0.1
+            lower = self.img_size * (1 - tolerance)
+            upper = self.img_size * (1 + tolerance)
+            if lower <= h <= upper and lower <= w <= upper:
+                print(f"[RailDataset] Detected pre-resized data: {self.train_root} "
+                      f"(first image {h}×{w} ≈ {self.img_size}), skipping runtime resize")
+                return True
+        except Exception as e:
+            print(f"[RailDataset] Pre-resize detection failed: {e}")
+        return False
+
     def _scan_files(self) -> List[Dict]:
         """扫描训练集或测试集"""
         samples = []
@@ -491,7 +542,11 @@ class RailDualModalDataset(Dataset):
             return img[y_start:y_end, x_start:x_end]
 
     def _load_rgb(self, path: str, patch_idx: int = 0) -> torch.Tensor:
-        """加载 RGB 图像"""
+        """加载 RGB 图像。
+
+        如果 self.is_preresized=True，则图像已是目标尺寸，跳过 resize；
+        否则按原逻辑 patch 或整图 resize。
+        """
         # 从缓存加载（如果已预加载）
         if path in self.rgb_cache:
             img = self.rgb_cache[path].copy()
@@ -505,10 +560,29 @@ class RailDualModalDataset(Dataset):
         if self.use_patch:
             img = self._extract_patch(img, patch_idx)
 
-        return self.intensity_tf(img)
+        # intensity_tf 内部有 Resize，但如果已 pre-resized 且不用 patch，
+        # 图像已经是 img_size×img_size，Resize 变成 no-op（仍会走一遍插值但很快）
+        # 为彻底避免，可以在 is_preresized 且 not use_patch 时用无 Resize 的 tf
+        if self.is_preresized and not self.use_patch:
+            # 已 resize 且整图模式 → 跳过 Resize，直接 ToTensor + Normalize
+            from torchvision import transforms
+            tf = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ])
+            return tf(img)
+        else:
+            # 原逻辑：走 self.intensity_tf（含 Resize）
+            return self.intensity_tf(img)
 
     def _load_depth(self, path: str, patch_idx: int = 0) -> torch.Tensor:
-        """加载深度图"""
+        """加载深度图。
+
+        如果 self.is_preresized=True 且不用 patch，则深度图已是目标尺寸，跳过 resize。
+        """
         # 从缓存加载（如果已预加载）
         if path in self.depth_cache:
             depth = self.depth_cache[path].copy().astype(np.float32)
@@ -540,7 +614,10 @@ class RailDualModalDataset(Dataset):
         else:
             raise ValueError(f"unknown depth_norm: {self.depth_norm}")
 
-        depth = cv2.resize(depth, (self.img_size, self.img_size))
+        # 如果已 pre-resized 且整图模式，跳过 resize
+        if not (self.is_preresized and not self.use_patch):
+            depth = cv2.resize(depth, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST)
+
         # 复制成 3 通道
         depth = np.stack([depth, depth, depth], axis=0)
         return torch.from_numpy(depth).float()

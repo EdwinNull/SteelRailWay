@@ -25,7 +25,7 @@ set -e
 
 # ============== 路径配置（按需修改） ==============
 # 已经离线 resize 后的训练数据根目录
-TRAIN_ROOT="${TRAIN_ROOT:-/data/data_20260327_512}"
+TRAIN_ROOT="${TRAIN_ROOT:-/data1/Leaddo_data/20260327-resize512}"
 # 测试数据根目录（保持原始大图，patch 推理）
 TEST_ROOT="${TEST_ROOT:-/data/rail_mvtec_gt_test}"
 # 输出根目录

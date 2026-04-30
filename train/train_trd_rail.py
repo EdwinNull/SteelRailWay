@@ -550,11 +550,13 @@ def main(args):
                 best_epoch_saved = epoch
                 patience_counter = 0
                 ckpt_path = os.path.join(run_dir, f"best_cam{args.view_id}.pth")
+                # 注意：best_val_loss 必须 cast 成 Python float
+                # 否则 numpy.float64 会触发 PyTorch 2.6 weights_only=True 报错
                 torch.save({
-                    'epoch': epoch,
+                    'epoch': int(epoch),
                     'student_rgb': student_rgb.state_dict(),
                     'student_depth': student_depth.state_dict(),
-                    'best_val_loss': best_val_loss,
+                    'best_val_loss': float(best_val_loss),
                 }, ckpt_path)
                 msg = f"Saved best model to {ckpt_path}"
                 print(msg)
@@ -588,7 +590,14 @@ def main(args):
 
     # 加载 best ckpt（保证最终评估用的是验证集最佳模型，而不是最后一轮）
     if os.path.exists(best_ckpt_path):
-        ckpt = torch.load(best_ckpt_path, map_location=device)
+        # PyTorch 2.6+ 默认 weights_only=True，会拒绝 numpy 标量等非张量对象。
+        # 当前 ckpt 由本脚本生成，来源可信 → 显式 weights_only=False。
+        # 同时兼容 PyTorch < 2.4 不支持该参数的情况。
+        try:
+            ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+        except TypeError:
+            # 老版本 torch 没有 weights_only 参数
+            ckpt = torch.load(best_ckpt_path, map_location=device)
         # compile 后的模型 state_dict key 会带 _orig_mod. 前缀，兼容加载
         def _strip_prefix(sd):
             return {k.replace("_orig_mod.", ""): v for k, v in sd.items()}

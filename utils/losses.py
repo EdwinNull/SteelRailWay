@@ -48,8 +48,8 @@ def loss_distil(feature_s, feature_t):
     for i in range(len(feature_s)):
         # flatten 每个样本到 1D 向量，CosineSimilarity 默认沿 dim=1 计算
         loss_i = torch.mean(1 - loss_type(
-            feature_s[i].view(feature_s[i].shape[0], -1),
-            feature_t[i].view(feature_t[i].shape[0], -1)))
+            feature_s[i].reshape(feature_s[i].shape[0], -1),
+            feature_t[i].reshape(feature_t[i].shape[0], -1)))
         loss += loss_i
 
     return loss

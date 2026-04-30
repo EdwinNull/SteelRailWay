@@ -27,18 +27,20 @@ set -e
 # 已经离线 resize 后的训练数据根目录
 TRAIN_ROOT="${TRAIN_ROOT:-/data1/Leaddo_data/20260327-resize512}"
 # 测试数据根目录（保持原始大图，patch 推理）
-TEST_ROOT="${TEST_ROOT:-/data/rail_mvtec_gt_test}"
+TEST_ROOT="${TEST_ROOT:-/home/root123/LF/WYM/SteelRailWay/rail_mvtec_gt_test}"
 # 输出根目录
 SAVE_DIR="${SAVE_DIR:-./outputs/rail_all}"
 
 # ============== 训练超参（速度 + 质量平衡） ==============
 IMG_SIZE=512
-BATCH_SIZE=128
+BATCH_SIZE=32
 EPOCHS=100
 LR=0.005
 NUM_WORKERS=8
 PRELOAD_WORKERS=16
 PRECISION=bf16     # RTX 6000 Pro 首选；老卡可改 fp16
+TRAIN_SAMPLE_NUM=1200
+SAMPLING_MODE=uniform_time
 
 # ============== 视角列表（默认全部 8 个） ==============
 VIEWS="${VIEWS:-1 2 3 4 5 6 7 8}"
@@ -72,8 +74,8 @@ for v in $VIEWS; do
         --preload_workers $PRELOAD_WORKERS \
         --precision  $PRECISION \
         --channels_last \
-        --train_sample_ratio 1.0 \
-        --sampling_mode uniform_time \
+        --train_sample_num $TRAIN_SAMPLE_NUM \
+        --sampling_mode $SAMPLING_MODE \
         --device     "$DEVICE" \
         --save_dir   "$SAVE_DIR" \
         2>&1 | tee -a "$SUMMARY"

@@ -79,6 +79,7 @@ class RailDualModalDataset(Dataset):
         preload: bool = False,
         preload_workers: int = 16,
         train_val_test_split: List[float] = None,
+        sampling_mode: str = "uniform_time",
     ):
         super().__init__()
         self.train_root = train_root
@@ -96,6 +97,12 @@ class RailDualModalDataset(Dataset):
         self.preload = preload
         self.preload_workers = preload_workers
         self.train_val_test_split = train_val_test_split or [0.8, 0.1, 0.1]
+        # 采样模式：
+        #   "random"        - 随机采样（原行为）
+        #   "uniform_time"  - 按文件名（即时间戳）排序后等步长抽取，
+        #                     保证所选样本在采集时间轴上均匀分布，避免
+        #                     某段时间数据过密/过疏带来的分布偏差
+        self.sampling_mode = sampling_mode
 
         # 预加载缓存
         self.rgb_cache: Dict[str, np.ndarray] = {}
@@ -151,27 +158,47 @@ class RailDualModalDataset(Dataset):
 
             if not os.path.exists(rgb_dir):
                 raise FileNotFoundError(f"RGB directory not found: {rgb_dir}")
+            if not os.path.exists(depth_dir):
+                raise FileNotFoundError(f"Depth directory not found: {depth_dir}")
 
+            # 关键：按文件名排序 = 按时间排序（命名格式 YYYYMMDD_HHMMSS_Cam*_xxx）
+            # 后续的 uniform_time 采样依赖这一顺序
             rgb_files = sorted([f for f in os.listdir(rgb_dir) if f.endswith(".jpg")])
 
+            # 预扫描 depth 目录建索引，避免每个 RGB 都去 stat 一次磁盘
+            depth_set = set(os.listdir(depth_dir)) if os.path.exists(depth_dir) else set()
+
+            missing = 0
             for rgb_file in rgb_files:
                 frame_id = rgb_file.replace(".jpg", "")
-                depth_file = frame_id + ".tiff"
+                # 兼容 Railway 命名：reflectance 后缀的 RGB 对应去掉后缀的深度图
+                if frame_id.endswith("_reflectance"):
+                    depth_base = frame_id[: -len("_reflectance")]
+                else:
+                    depth_base = frame_id
 
-                rgb_path = os.path.join(rgb_dir, rgb_file)
-                depth_path = os.path.join(depth_dir, depth_file)
-
-                if not os.path.exists(depth_path):
-                    continue
+                # 优先 .tiff，再 .tif
+                depth_file = depth_base + ".tiff"
+                if depth_file not in depth_set:
+                    alt = depth_base + ".tif"
+                    if alt in depth_set:
+                        depth_file = alt
+                    else:
+                        missing += 1
+                        continue  # 缺少匹配的 depth 直接跳过，保证对应关系
 
                 samples.append({
-                    "rgb_path": rgb_path,
-                    "depth_path": depth_path,
+                    "rgb_path": os.path.join(rgb_dir, rgb_file),
+                    "depth_path": os.path.join(depth_dir, depth_file),
                     "label": 0,  # 训练集和验证集全是正常样本
                     "gt_path": None,
                     "view_id": self.view_id,
                     "frame_id": frame_id,
                 })
+
+            if missing > 0:
+                print(f"[RailDataset] Cam{self.view_id}: {missing} RGB images "
+                      f"missing matched depth, skipped (kept {len(samples)})")
 
         else:  # test
             # 测试集：rail_mvtec_gt_test/rail_mvtec/cam{view_id}/
@@ -241,44 +268,96 @@ class RailDualModalDataset(Dataset):
         return samples
 
     def _apply_sampling(self):
-        """对训练集/验证集进行采样和划分"""
-        total = len(self.samples)
+        """对训练集/验证集进行采样和划分。
 
-        # 先进行数据采样（如果需要）
+        重要：进入本函数时 self.samples 已按文件名（即时间戳）有序。
+
+        步骤：
+            1) 在时间轴上整体抽样到 target_num（uniform_time 或 random）
+            2) 从抽样结果中按 train/val 比例划分（依然时间均匀）
+
+        train/val 划分采用"交错抽取"策略，避免简单切片导致 train 全是
+        早期数据、val 全是后期数据，引发分布漂移。
+        """
+        total = len(self.samples)
+        if total == 0:
+            return
+
+        # ---------- step 1: 选出 target_num 个样本 ----------
         if self.train_sample_num is not None:
             target_num = min(self.train_sample_num, total)
         else:
-            target_num = int(total * self.train_sample_ratio)
+            target_num = max(1, int(total * self.train_sample_ratio))
 
         if target_num < total:
-            np.random.seed(self.random_seed)
-            indices = np.random.choice(total, target_num, replace=False)
-            self.samples = [self.samples[i] for i in sorted(indices)]
-            print(f"[RailDataset] Sampled {target_num}/{total} images "
-                  f"(ratio={target_num/total:.2%})")
+            if self.sampling_mode == "uniform_time":
+                # 等步长抽样：在 [0, total) 上均匀取 target_num 个浮点位置后取整
+                # 例：total=1000, target=100 → 取索引 0, 10, 20, ... 990
+                idx = np.linspace(0, total - 1, num=target_num).round().astype(int)
+                idx = np.unique(idx)  # 防止四舍五入产生重复
+                # 若去重后不够，从未选中的里面补到刚好 target_num
+                if idx.size < target_num:
+                    pool = np.setdiff1d(np.arange(total), idx)
+                    rng = np.random.default_rng(self.random_seed)
+                    extra = rng.choice(pool, size=target_num - idx.size, replace=False)
+                    idx = np.sort(np.concatenate([idx, extra]))
+                self.samples = [self.samples[i] for i in idx]
+                print(f"[RailDataset] Uniform-time sampled {len(self.samples)}/{total} "
+                      f"({len(self.samples)/total:.1%})")
+            else:
+                # 经典随机采样
+                rng = np.random.default_rng(self.random_seed)
+                idx = np.sort(rng.choice(total, target_num, replace=False))
+                self.samples = [self.samples[i] for i in idx]
+                print(f"[RailDataset] Random sampled {len(self.samples)}/{total} "
+                      f"({len(self.samples)/total:.1%})")
         else:
             print(f"[RailDataset] Using all {total} images")
 
-        # 然后进行 train/val 划分
+        # ---------- step 2: train / val 时间均匀划分 ----------
         total_sampled = len(self.samples)
-        train_ratio, val_ratio, test_ratio = self.train_val_test_split
+        train_ratio, val_ratio, _ = self.train_val_test_split
+        total_split = train_ratio + val_ratio
+        if total_split <= 0:
+            return
+        # 归一化（兼容用户传入 [0.9, 0.1, 0.0] 这种）
+        train_ratio_n = train_ratio / total_split
+        val_ratio_n = val_ratio / total_split
 
-        # 计算划分点
-        train_end = int(total_sampled * train_ratio)
-        val_end = train_end + int(total_sampled * val_ratio)
+        if val_ratio_n <= 0:
+            # 没有验证集需求 → 全部当 train
+            if self.split == "val":
+                self.samples = []
+            print(f"[RailDataset] {self.split} split: {len(self.samples)} images "
+                  f"(no val partition)")
+            return
 
-        # 打乱数据（使用固定种子保证可复现）
-        np.random.seed(self.random_seed)
-        indices = np.random.permutation(total_sampled)
+        # 交错抽取：每隔 step 抽一个给 val，其余给 train。
+        # 这样 train 与 val 在时间分布上一致，且 val 始终能覆盖整个采集周期。
+        step = max(2, int(round(1.0 / val_ratio_n)))
+        all_indices = np.arange(total_sampled)
+        # 用固定 offset，使种子相同则划分一致
+        rng = np.random.default_rng(self.random_seed)
+        offset = int(rng.integers(0, step))
+        val_mask = ((all_indices + offset) % step == 0)
+        # 控制 val 数量不超过预算
+        budget_val = max(1, int(round(total_sampled * val_ratio_n)))
+        if val_mask.sum() > budget_val:
+            # 把多出来的位置改回 train（随机抹掉）
+            extra = val_mask.sum() - budget_val
+            val_pos = np.where(val_mask)[0]
+            drop = rng.choice(val_pos, size=extra, replace=False)
+            val_mask[drop] = False
 
+        train_mask = ~val_mask
         if self.split == "train":
-            selected_indices = indices[:train_end]
-            self.samples = [self.samples[i] for i in sorted(selected_indices)]
-            print(f"[RailDataset] Train split: {len(self.samples)} images")
+            self.samples = [self.samples[i] for i in all_indices[train_mask]]
+            print(f"[RailDataset] Train split (time-uniform interleave): "
+                  f"{len(self.samples)} images")
         elif self.split == "val":
-            selected_indices = indices[train_end:val_end]
-            self.samples = [self.samples[i] for i in sorted(selected_indices)]
-            print(f"[RailDataset] Val split: {len(self.samples)} images")
+            self.samples = [self.samples[i] for i in all_indices[val_mask]]
+            print(f"[RailDataset] Val split (time-uniform interleave): "
+                  f"{len(self.samples)} images")
 
     def _preload_data(self):
         """预加载所有图像到内存（多进程并行）"""

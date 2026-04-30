@@ -25,6 +25,7 @@ import numpy as np
 import random
 from datetime import datetime
 from typing import Dict
+from contextlib import nullcontext
 from tqdm import tqdm
 
 from datasets.rail_dataset import RailDualModalDataset
@@ -34,12 +35,34 @@ from utils.losses import loss_distil
 from eval.eval_utils import cal_anomaly_map
 from sklearn.metrics import roc_auc_score
 
-# AMP for mixed precision training
+# AMP（混合精度训练）
+# 优先使用新的 torch.amp API（PyTorch >= 2.0），失败则回退到旧 API
 try:
-    from torch.cuda.amp import autocast, GradScaler
+    from torch.amp import autocast as _autocast_new
+    from torch.amp import GradScaler as _GradScalerNew
+
+    def autocast(enabled=True, dtype=torch.float16):
+        return _autocast_new("cuda", enabled=enabled, dtype=dtype)
+
+    def make_scaler(enabled=True):
+        # bf16 不需要 GradScaler；fp16 才需要
+        return _GradScalerNew("cuda", enabled=enabled)
+
     AMP_AVAILABLE = True
 except ImportError:
-    AMP_AVAILABLE = False
+    try:
+        from torch.cuda.amp import autocast as _autocast_old
+        from torch.cuda.amp import GradScaler as _GradScalerOld
+
+        def autocast(enabled=True, dtype=torch.float16):
+            return _autocast_old(enabled=enabled, dtype=dtype)
+
+        def make_scaler(enabled=True):
+            return _GradScalerOld(enabled=enabled)
+
+        AMP_AVAILABLE = True
+    except ImportError:
+        AMP_AVAILABLE = False
 
 
 def setup_seed(seed, deterministic=False):
@@ -57,10 +80,17 @@ def setup_seed(seed, deterministic=False):
 
 def train_one_epoch(teacher_rgb, teacher_depth, student_rgb, student_depth,
                     train_loader, optimizer_rgb, optimizer_depth,
-                    device, epoch, log_file, scaler=None, use_amp=False):
-    """训练一个 epoch（AMP + 双学生并行前向）"""
+                    device, epoch, log_file, scaler=None, amp_dtype=None,
+                    channels_last=False):
+    """训练一个 epoch（AMP + 双学生并行前向）
+
+    amp_dtype: None=fp32, torch.float16=AMP fp16(需 scaler), torch.bfloat16=AMP bf16(不需 scaler)
+    """
     student_rgb.train()
     student_depth.train()
+
+    use_amp = amp_dtype is not None
+    use_scaler = use_amp and amp_dtype == torch.float16
 
     loss_rgb_list = []
     loss_depth_list = []
@@ -69,20 +99,26 @@ def train_one_epoch(teacher_rgb, teacher_depth, student_rgb, student_depth,
                 desc=f'Epoch {epoch}', leave=False)
 
     for batch_idx, data in pbar:
-        rgb = data["intensity"].to(device)
-        depth = data["depth"].to(device)
+        rgb = data["intensity"].to(device, non_blocking=True)
+        depth = data["depth"].to(device, non_blocking=True)
+        if channels_last:
+            rgb = rgb.contiguous(memory_format=torch.channels_last)
+            depth = depth.contiguous(memory_format=torch.channels_last)
+
+        amp_ctx = autocast(enabled=use_amp, dtype=amp_dtype) if use_amp else nullcontext()
 
         with torch.no_grad():
-            feat_t_rgb = teacher_rgb(rgb)
-            feat_t_depth = teacher_depth(depth)
+            with amp_ctx:
+                feat_t_rgb = teacher_rgb(rgb)
+                feat_t_depth = teacher_depth(depth)
             feat_t_rgb = [f.detach() for f in feat_t_rgb]
             feat_t_depth = [f.detach() for f in feat_t_depth]
 
         optimizer_rgb.zero_grad(set_to_none=True)
         optimizer_depth.zero_grad(set_to_none=True)
 
-        # 两个学生同步 forward（在同一个 autocast 上下文中）
-        with autocast(enabled=use_amp):
+        # 两个学生在同一 autocast 上下文中前向
+        with (autocast(enabled=use_amp, dtype=amp_dtype) if use_amp else nullcontext()):
             proj_d, proj_d_amply, feat_s_rgb, feat_s_rgb_am = student_rgb(feat_t_rgb, feat_t_depth)
             loss_rgb = (
                 loss_distil(feat_s_rgb, feat_t_rgb) +
@@ -101,16 +137,14 @@ def train_one_epoch(teacher_rgb, teacher_depth, student_rgb, student_depth,
 
         # 总 loss 一次 backward（减少一次 Python→CUDA 调度）
         total_loss = loss_rgb + loss_depth
-        if use_amp:
+        if use_scaler:
             scaler.scale(total_loss).backward()
-        else:
-            total_loss.backward()
-
-        if use_amp:
             scaler.step(optimizer_rgb)
             scaler.step(optimizer_depth)
             scaler.update()
         else:
+            # bf16 或 fp32：直接 step（bf16 范围与 fp32 相同，不会溢出）
+            total_loss.backward()
             optimizer_rgb.step()
             optimizer_depth.step()
 
@@ -137,24 +171,28 @@ def train_one_epoch(teacher_rgb, teacher_depth, student_rgb, student_depth,
 
 
 def compute_val_loss(teacher_rgb, teacher_depth, student_rgb, student_depth,
-                     val_loader, device, use_amp=False):
+                     val_loader, device, amp_dtype=None, channels_last=False):
     """计算验证集上的 RGB 蒸馏损失（用于早停判断）
 
     只算 RGB 分支：depth loss 与 rgb loss 高度相关，省掉 depth 学生的前向
     """
     student_rgb.eval()
 
+    use_amp = amp_dtype is not None
     loss_rgb_list = []
 
     with torch.no_grad():
         for data in val_loader:
-            rgb = data["intensity"].to(device)
-            depth = data["depth"].to(device)
+            rgb = data["intensity"].to(device, non_blocking=True)
+            depth = data["depth"].to(device, non_blocking=True)
+            if channels_last:
+                rgb = rgb.contiguous(memory_format=torch.channels_last)
+                depth = depth.contiguous(memory_format=torch.channels_last)
 
-            feat_t_rgb = teacher_rgb(rgb)
-            feat_t_depth = teacher_depth(depth)
+            with (autocast(enabled=use_amp, dtype=amp_dtype) if use_amp else nullcontext()):
+                feat_t_rgb = teacher_rgb(rgb)
+                feat_t_depth = teacher_depth(depth)
 
-            with autocast(enabled=use_amp):
                 proj_d, proj_d_amply, feat_s_rgb, feat_s_rgb_am = student_rgb(feat_t_rgb, feat_t_depth)
                 loss_rgb = (
                     loss_distil(feat_s_rgb, feat_t_rgb) +
@@ -172,10 +210,12 @@ def compute_val_loss(teacher_rgb, teacher_depth, student_rgb, student_depth,
 
 
 def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
-             test_loader, device, log_file, use_amp=False):
+             test_loader, device, log_file, amp_dtype=None, channels_last=False):
     """评估测试集，计算图像级 AUROC（patch 分数聚合到原图后取 max）"""
     student_rgb.eval()
     student_depth.eval()
+
+    use_amp = amp_dtype is not None
 
     # 收集每个 (frame_id) 的所有 patch 分数和标签
     img_scores: Dict[str, list] = {}
@@ -183,15 +223,17 @@ def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
 
     with torch.no_grad():
         for data in test_loader:
-            rgb = data["intensity"].to(device)
-            depth = data["depth"].to(device)
+            rgb = data["intensity"].to(device, non_blocking=True)
+            depth = data["depth"].to(device, non_blocking=True)
+            if channels_last:
+                rgb = rgb.contiguous(memory_format=torch.channels_last)
+                depth = depth.contiguous(memory_format=torch.channels_last)
             labels = data["label"].cpu().numpy()
             frame_ids = data["frame_id"]  # list of strings
 
-            feat_t_rgb = teacher_rgb(rgb)
-            feat_t_depth = teacher_depth(depth)
-
-            with autocast(enabled=use_amp):
+            with (autocast(enabled=use_amp, dtype=amp_dtype) if use_amp else nullcontext()):
+                feat_t_rgb = teacher_rgb(rgb)
+                feat_t_depth = teacher_depth(depth)
                 proj_d, proj_d_amply, feat_s_rgb, feat_s_rgb_am = student_rgb(feat_t_rgb, feat_t_depth)
                 proj_r, proj_r_amply, feat_s_depth, feat_s_depth_am = student_depth(feat_t_depth, feat_t_rgb)
 
@@ -266,7 +308,7 @@ def main(args):
         split="train",
         img_size=args.img_size,
         depth_norm=args.depth_norm,
-        use_patch=args.use_patch,
+        use_patch=args.use_patch,            # 训练默认 False（整图 resize，速度优先）
         patch_size=args.patch_size,
         patch_stride=args.patch_stride,
         train_sample_ratio=args.train_sample_ratio,
@@ -275,6 +317,7 @@ def main(args):
         preload=args.preload,
         preload_workers=args.preload_workers,
         train_val_test_split=args.train_val_test_split,
+        sampling_mode=args.sampling_mode,    # 时间均匀采样保证训练分布稳定
     )
 
     val_dataset = RailDualModalDataset(
@@ -293,8 +336,10 @@ def main(args):
         preload=args.preload,
         preload_workers=args.preload_workers,
         train_val_test_split=args.train_val_test_split,
+        sampling_mode=args.sampling_mode,
     )
 
+    # 测试集独立配置 patch（保持原始空间分辨率，便于检测小缺陷）
     test_dataset = RailDualModalDataset(
         train_root=args.train_root,
         test_root=args.test_root,
@@ -302,37 +347,46 @@ def main(args):
         split="test",
         img_size=args.img_size,
         depth_norm=args.depth_norm,
-        use_patch=args.use_patch,
-        patch_size=args.patch_size,
-        patch_stride=args.patch_stride,
+        use_patch=args.test_use_patch,           # 测试默认 True
+        patch_size=args.test_patch_size,
+        patch_stride=args.test_patch_stride,
         preload=args.preload,
         preload_workers=args.preload_workers,
     )
 
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}, Test samples: {len(test_dataset)}")
 
+    # DataLoader 关键加速：
+    # - persistent_workers: worker 进程跨 epoch 复用，避免反复初始化
+    # - prefetch_factor: 每个 worker 预取 4 个 batch，掩盖 IO 抖动
+    nw = args.num_workers
+    common_loader_kwargs = dict(
+        num_workers=nw,
+        pin_memory=True,
+        persistent_workers=(nw > 0),
+        prefetch_factor=(4 if nw > 0 else None),
+    )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
+        drop_last=True,                  # 与 channels_last + AMP 共用，避免最后小 batch 触发重编译
+        **common_loader_kwargs,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
+        **common_loader_kwargs,
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
+        **common_loader_kwargs,
     )
 
     # 创建模型
@@ -357,6 +411,14 @@ def main(args):
         pretrained=False
     ).to(device)
 
+    # channels_last 内存格式（NHWC）：在 Tensor Core GPU 上 ConvNet 提速 10-30%
+    if args.channels_last and device.type == "cuda":
+        teacher_rgb = teacher_rgb.to(memory_format=torch.channels_last)
+        teacher_depth = teacher_depth.to(memory_format=torch.channels_last)
+        student_rgb = student_rgb.to(memory_format=torch.channels_last)
+        student_depth = student_depth.to(memory_format=torch.channels_last)
+        print("Memory format: channels_last (NHWC)")
+
     # 优化器
     optimizer_rgb = torch.optim.Adam(
         student_rgb.parameters(),
@@ -373,13 +435,28 @@ def main(args):
     scheduler_rgb = torch.optim.lr_scheduler.ExponentialLR(optimizer_rgb, gamma=0.95)
     scheduler_depth = torch.optim.lr_scheduler.ExponentialLR(optimizer_depth, gamma=0.95)
 
-    # AMP 混合精度（显存充裕时开启 fp16 + 并行 = 更快）
-    use_amp = args.amp and AMP_AVAILABLE
-    scaler = GradScaler(enabled=use_amp) if use_amp else None
-    if use_amp:
-        print("AMP mixed precision enabled (fp16)")
+    # 混合精度配置：
+    #   - bf16: RTX 6000 Pro / Ampere+ 原生支持，范围与 fp32 相同，无需 GradScaler，训练最稳
+    #   - fp16: 老 GPU(Turing) 备选，需 GradScaler 防溢出
+    #   - fp32: 关闭 AMP（兼容性兜底）
+    amp_dtype = None
+    use_scaler = False
+    if args.precision == "bf16" and AMP_AVAILABLE and torch.cuda.is_bf16_supported():
+        amp_dtype = torch.bfloat16
+        print("Mixed precision: bfloat16 (no GradScaler needed)")
+    elif args.precision == "fp16" and AMP_AVAILABLE:
+        amp_dtype = torch.float16
+        use_scaler = True
+        print("Mixed precision: fp16 (GradScaler enabled)")
+    elif args.precision == "bf16":
+        # 用户要 bf16 但硬件不支持 → 自动降级 fp16
+        amp_dtype = torch.float16
+        use_scaler = True
+        print("bf16 not supported on this GPU, falling back to fp16")
     else:
-        print("fp32 training")
+        print("Precision: fp32 (AMP disabled)")
+
+    scaler = make_scaler(enabled=use_scaler) if use_scaler else None
 
     # 保存原始模型引用（compile 失败时回退用）
     teacher_rgb_org, teacher_depth_org = teacher_rgb, teacher_depth
@@ -441,7 +518,8 @@ def main(args):
         avg_loss_rgb, avg_loss_depth = train_one_epoch(
             teacher_rgb, teacher_depth, student_rgb, student_depth,
             train_loader, optimizer_rgb, optimizer_depth,
-            device, epoch, log_file, scaler=scaler, use_amp=use_amp
+            device, epoch, log_file,
+            scaler=scaler, amp_dtype=amp_dtype, channels_last=args.channels_last,
         )
 
         # 更新学习率
@@ -457,7 +535,8 @@ def main(args):
         if epoch % args.eval_interval == 0:
             val_loss_rgb, val_loss_depth, val_loss_total = compute_val_loss(
                 teacher_rgb, teacher_depth, student_rgb, student_depth,
-                val_loader, device, use_amp=use_amp
+                val_loader, device,
+                amp_dtype=amp_dtype, channels_last=args.channels_last,
             )
 
             msg = f"Epoch {epoch} - Val Loss RGB: {val_loss_rgb:.4f}, Val Loss Depth: {val_loss_depth:.4f}, Total: {val_loss_total:.4f}"
@@ -507,10 +586,23 @@ def main(args):
     print("Final evaluation on test set (best checkpoint)...")
     print("=" * 50)
 
-    # 直接用训练完的 student 评估（即当前最优），无需重新加载
+    # 加载 best ckpt（保证最终评估用的是验证集最佳模型，而不是最后一轮）
+    if os.path.exists(best_ckpt_path):
+        ckpt = torch.load(best_ckpt_path, map_location=device)
+        # compile 后的模型 state_dict key 会带 _orig_mod. 前缀，兼容加载
+        def _strip_prefix(sd):
+            return {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+        try:
+            student_rgb.load_state_dict(_strip_prefix(ckpt['student_rgb']))
+            student_depth.load_state_dict(_strip_prefix(ckpt['student_depth']))
+            print(f"Loaded best checkpoint from epoch {ckpt.get('epoch', '?')}")
+        except Exception as e:
+            print(f"Failed to load best ckpt ({e}), evaluating with current weights")
+
     test_auroc = evaluate(
         teacher_rgb, teacher_depth, student_rgb, student_depth,
-        test_loader, device, log_file, use_amp=use_amp
+        test_loader, device, log_file,
+        amp_dtype=amp_dtype, channels_last=args.channels_last,
     )
 
     msg = f"\n{'='*50}\n"
@@ -524,57 +616,90 @@ def main(args):
     with open(log_file, "a") as f:
         f.write(msg + "\n")
 
+    # ============================================================
+    # 训练结束清理：仅保留 best 模型，删除其它 .pth / .pt 检查点
+    # 节省磁盘空间（特别是 8 视角并发训练时）
+    # ============================================================
+    try:
+        kept = os.path.basename(best_ckpt_path)
+        removed = []
+        for fname in os.listdir(run_dir):
+            if fname.endswith((".pth", ".pt", ".ckpt")) and fname != kept:
+                fpath = os.path.join(run_dir, fname)
+                os.remove(fpath)
+                removed.append(fname)
+        if removed:
+            print(f"Cleaned up {len(removed)} non-best checkpoints: {removed}")
+            with open(log_file, "a") as f:
+                f.write(f"Cleaned up: {removed}\n")
+    except Exception as e:
+        print(f"Checkpoint cleanup warning: {e}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train TRD on Rail Dataset")
 
     # 数据参数
     parser.add_argument("--train_root", type=str, default="/data1/Leaddo_data/20260327",
-                        help="Path to training dataset")
+                        help="Path to training dataset (推荐用 preprocess_rail_resize.py 预处理后的目录)")
     parser.add_argument("--test_root", type=str, default="/home/root123/LF/WYM/SteelRailWay/rail_mvtec_gt_test",
                         help="Path to test dataset")
     parser.add_argument("--view_id", type=int, default=1,
                         help="Camera view ID (1-8 for train, 1-6 for test)")
-    parser.add_argument("--img_size", type=int, default=384,
-                        help="Input image size")
+    parser.add_argument("--img_size", type=int, default=512,
+                        help="Input image size (与 Railway 参考实现对齐)")
     parser.add_argument("--depth_norm", type=str, default="zscore",
                         choices=["zscore", "minmax", "log"],
                         help="Depth normalization method")
 
-    # Patch 参数
-    parser.add_argument("--use_patch", type=bool, default=True,
-                        help="Use patch sliding window")
+    # ============== 训练阶段 patch ==============
+    # 默认关闭：整图 resize→512，比 patch 切分快 7 倍（论文默认也是整图）
+    parser.add_argument("--use_patch", action="store_true", default=False,
+                        help="(训练) 是否使用 patch 切分，默认 False = 整图 resize")
     parser.add_argument("--patch_size", type=int, default=900,
-                        help="Patch size")
+                        help="(训练) Patch size when use_patch=True")
     parser.add_argument("--patch_stride", type=int, default=850,
-                        help="Patch stride (overlap = patch_size - stride)")
+                        help="(训练) Patch stride")
+
+    # ============== 测试阶段 patch ==============
+    # 默认开启：测试集原图较大，保持 patch 推理 + max 聚合 → 检测小缺陷
+    parser.add_argument("--test_use_patch", action="store_true", default=True,
+                        help="(测试) 是否使用 patch 切分，默认 True 提升小缺陷召回")
+    parser.add_argument("--no_test_use_patch", action="store_false", dest="test_use_patch")
+    parser.add_argument("--test_patch_size", type=int, default=900,
+                        help="(测试) Patch size")
+    parser.add_argument("--test_patch_stride", type=int, default=850,
+                        help="(测试) Patch stride")
 
     # 数据采样参数
-    parser.add_argument("--train_sample_ratio", type=float, default=0.5,
-                        help="Training data sampling ratio (0-1, default 0.5 for 50%)")
+    parser.add_argument("--train_sample_ratio", type=float, default=1.0,
+                        help="Training data sampling ratio (0-1, 默认 1.0 用满全部数据)")
     parser.add_argument("--train_sample_num", type=int, default=None,
                         help="Training data sampling number (overrides ratio if set)")
     parser.add_argument("--random_seed_sample", type=int, default=42,
                         help="Random seed for data sampling")
-    parser.add_argument("--train_val_test_split", type=float, nargs=3, default=[0.8, 0.1, 0.1],
-                        help="Train/Val/Test split ratio (default: 0.8 0.1 0.1)")
+    parser.add_argument("--train_val_test_split", type=float, nargs=3, default=[0.9, 0.1, 0.0],
+                        help="Train/Val/Test split ratio (test 来自 rail_mvtec_gt_test，所以这里 test=0)")
+    parser.add_argument("--sampling_mode", type=str, default="uniform_time",
+                        choices=["random", "uniform_time"],
+                        help="采样模式：random=随机采样；uniform_time=按文件名(时间)均匀采样")
 
     # 数据预加载参数
     parser.add_argument("--preload", action="store_true",
-                        help="Preload all images to memory (recommended for fast training)")
+                        help="Preload all images to memory (强烈推荐)")
     parser.add_argument("--preload_workers", type=int, default=16,
                         help="Number of workers for preloading (default 16)")
 
-    # 训练参数
-    parser.add_argument("--batch_size", type=int, default=48,
-                        help="Batch size")
+    # 训练参数（针对 RTX 6000 Pro 80GB 调优）
+    parser.add_argument("--batch_size", type=int, default=128,
+                        help="Batch size (RTX 6000 Pro 80GB 可上 128~192)")
     parser.add_argument("--epochs", type=int, default=100,
                         help="Number of epochs")
     parser.add_argument("--lr", type=float, default=0.005,
                         help="Learning rate")
     parser.add_argument("--eval_interval", type=int, default=5,
                         help="Evaluation interval")
-    parser.add_argument("--num_workers", type=int, default=4,
+    parser.add_argument("--num_workers", type=int, default=8,
                         help="Number of dataloader workers")
 
     # 其他参数
@@ -584,10 +709,15 @@ if __name__ == "__main__":
                         help="Device to use")
     parser.add_argument("--save_dir", type=str, default="./outputs/rail",
                         help="Directory to save checkpoints and logs")
-    parser.add_argument("--amp", action="store_true", default=True,
-                        help="Enable AMP mixed precision fp16 (saves VRAM)")
-    parser.add_argument("--no_amp", action="store_false", dest="amp",
-                        help="Disable AMP, use fp32")
+
+    # 精度选择（bf16 在 Ampere/Ada/Blackwell 是首选）
+    parser.add_argument("--precision", type=str, default="bf16",
+                        choices=["bf16", "fp16", "fp32"],
+                        help="训练精度：bf16 (推荐 RTX 6000 Pro)、fp16、fp32")
+    parser.add_argument("--channels_last", action="store_true", default=True,
+                        help="使用 channels_last (NHWC) 内存格式，Tensor Core 提速")
+    parser.add_argument("--no_channels_last", action="store_false", dest="channels_last")
+
     parser.add_argument("--compile", action="store_true", default=True,
                         help="Enable torch.compile graph JIT (PyTorch >= 2.0)")
     parser.add_argument("--no_compile", action="store_false", dest="compile",

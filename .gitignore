@@ -9,6 +9,7 @@ rail_mvtec_gt_test/
 docs/
 CLAUDE.md
 .claude/
+Railway/
 
 # C extensions
 *.so

@@ -36,6 +36,7 @@ from datasets.rail_dataset import RailDualModalDataset
 from models.trd.encoder import ResNet50Encoder
 from models.trd.decoder import ResNet50DualModalDecoder
 from eval.eval_utils import cal_anomaly_map
+from rail_peft import DepthAffinePEFT, DepthEncoderWithPEFT
 from sklearn.metrics import roc_auc_score
 
 
@@ -69,6 +70,32 @@ def safe_load_ckpt(path, device):
 def strip_prefix(sd):
     """去掉 torch.compile 包装后的 _orig_mod. 前缀"""
     return {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+
+
+def load_depth_peft(path, device):
+    """Load a DepthAffinePEFT checkpoint saved either as a raw state_dict or payload."""
+    payload = safe_load_ckpt(path, device)
+    if isinstance(payload, dict) and "state_dict" in payload:
+        state_dict = payload["state_dict"]
+        metadata = {k: v for k, v in payload.items() if k != "state_dict"}
+    else:
+        state_dict = payload
+        metadata = {}
+
+    if not isinstance(state_dict, dict):
+        raise TypeError(f"Invalid depth PEFT checkpoint: {path}")
+
+    state_dict = {
+        k.replace("_orig_mod.", "").replace("module.", "").replace("peft.", ""): v
+        for k, v in state_dict.items()
+        if k.replace("_orig_mod.", "").replace("module.", "").replace("peft.", "") in {"gain", "bias"}
+    }
+    peft = DepthAffinePEFT().to(device)
+    peft.load_state_dict(state_dict, strict=True)
+    peft.eval()
+    for param in peft.parameters():
+        param.requires_grad_(False)
+    return peft, metadata
 
 
 def resolve_amp_dtype(precision, device):
@@ -116,6 +143,8 @@ def append_eval_log(log_file, result):
     msg += f"Evaluation time: {result['evaluated_at']}\n"
     msg += f"Script: scripts/eval_from_ckpt.py\n"
     msg += f"Checkpoint: {result['ckpt']}\n"
+    if result.get("depth_peft_ckpt"):
+        msg += f"Depth PEFT: {result['depth_peft_ckpt']}\n"
     msg += f"Status: {status}"
     if reason:
         msg += f" ({reason})"
@@ -232,6 +261,8 @@ def build_parser():
                         help="可选：指定分数 CSV 输出路径，默认写到 ckpt 同目录")
     parser.add_argument("--result_json", type=str, default=None,
                         help="可选：保存结构化评估结果 JSON，便于批量汇总")
+    parser.add_argument("--depth_peft_ckpt", type=str, default=None,
+                        help="可选：DepthAffinePEFT checkpoint；提供时仅替换 depth teacher 调用链")
     return parser
 
 
@@ -267,6 +298,7 @@ def evaluate_from_args(args):
         "evaluated_at": evaluated_at,
         "view_id": int(args.view_id),
         "ckpt": str(args.ckpt),
+        "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "ok",
@@ -335,6 +367,19 @@ def evaluate_from_args(args):
         else "N/A"
     )
     print(f"Loaded epoch={result['best_epoch']}, best_val_loss={best_val_loss_text}")
+
+    depth_peft_ckpt = getattr(args, "depth_peft_ckpt", None)
+    if depth_peft_ckpt:
+        peft, peft_meta = load_depth_peft(depth_peft_ckpt, device)
+        teacher_depth = DepthEncoderWithPEFT(teacher_depth, peft).to(device).eval()
+        result["depth_peft_ckpt"] = str(depth_peft_ckpt)
+        result["depth_peft_gain"] = float(peft.gain.detach().cpu())
+        result["depth_peft_bias"] = float(peft.bias.detach().cpu())
+        result["depth_peft_meta"] = peft_meta
+        print(
+            "Loaded Depth PEFT: "
+            f"{depth_peft_ckpt} (gain={peft.gain.item():.6f}, bias={peft.bias.item():.6f})"
+        )
 
     # ---- 3. 评估 ----
     auroc, scores, labels = evaluate(

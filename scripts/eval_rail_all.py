@@ -24,6 +24,7 @@ if _PROJ_ROOT not in sys.path:
 import argparse
 import csv
 import gc
+import json
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,7 @@ def base_result(args, view_id, ckpt=None, run_dir=None, log_file=None):
         "view_id": int(view_id),
         "run_dir": str(run_dir) if run_dir else "",
         "ckpt": str(ckpt) if ckpt else "",
+        "depth_peft_ckpt": "",
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "skipped",
@@ -118,9 +120,22 @@ def write_csv_row(writer, result):
         "score_max": format_value(result.get("score_max")),
         "run_dir": result.get("run_dir"),
         "ckpt": result.get("ckpt"),
+        "depth_peft_ckpt": result.get("depth_peft_ckpt"),
         "scores_csv": result.get("scores_csv"),
         "log_file": result.get("log_file") or result.get("output_log"),
     })
+
+
+def load_depth_peft_map(value: str | None) -> dict[int, str]:
+    if not value:
+        return {}
+    path = Path(value)
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    else:
+        raw = json.loads(value)
+    return {int(k): str(v) for k, v in raw.items() if v}
 
 
 def build_parser():
@@ -151,12 +166,15 @@ def build_parser():
     parser.add_argument("--no_channels_last", action="store_false", dest="channels_last")
     parser.add_argument("--append_log", action="store_true", default=True)
     parser.add_argument("--no_append_log", action="store_false", dest="append_log")
+    parser.add_argument("--depth_peft_map", type=str, default=None,
+                        help='可选：JSON 文件或 JSON 字符串，如 {"4": "path/to/final_peft_cam4.pth"}')
     return parser
 
 
 def main():
     args = build_parser().parse_args()
     runs_root = Path(args.runs_root)
+    depth_peft_map = load_depth_peft_map(args.depth_peft_map)
     runs_root.mkdir(parents=True, exist_ok=True)
     summary_root = Path(args.summary_dir) if args.summary_dir else runs_root / "_summaries"
     summary_root.mkdir(parents=True, exist_ok=True)
@@ -168,7 +186,8 @@ def main():
     fields = [
         "view_id", "status", "reason", "auroc", "best_epoch", "best_val_loss",
         "num_patches", "num_images", "num_abnormal", "num_normal",
-        "score_min", "score_max", "run_dir", "ckpt", "scores_csv", "log_file",
+        "score_min", "score_max", "run_dir", "ckpt", "depth_peft_ckpt",
+        "scores_csv", "log_file",
     ]
 
     with open(summary_txt, "w", encoding="utf-8") as f:
@@ -177,6 +196,8 @@ def main():
         f.write(f"Train root: {args.train_root}\n")
         f.write(f"Test root: {args.test_root}\n")
         f.write(f"Views: {' '.join(map(str, args.views))}\n\n")
+        if depth_peft_map:
+            f.write(f"Depth PEFT map: {depth_peft_map}\n\n")
 
     with open(summary_csv, "w", newline="", encoding="utf-8") as f_csv:
         writer = csv.DictWriter(f_csv, fieldnames=fields)
@@ -201,6 +222,7 @@ def main():
             log_file = run_dir / "training.log"
             scores_csv = run_dir / f"best_cam{view_id}_test_scores.csv"
             result_json = run_dir / f"eval_cam{view_id}_result.json"
+            depth_peft_ckpt = depth_peft_map.get(view_id, "")
 
             eval_args = SimpleNamespace(
                 ckpt=str(ckpt),
@@ -223,6 +245,7 @@ def main():
                 append_log=args.append_log,
                 scores_csv=str(scores_csv),
                 result_json=str(result_json),
+                depth_peft_ckpt=depth_peft_ckpt,
             )
 
             try:

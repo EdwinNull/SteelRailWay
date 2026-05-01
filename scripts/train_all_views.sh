@@ -28,7 +28,7 @@ set -e
 TRAIN_ROOT="${TRAIN_ROOT:-/data1/Leaddo_data/20260327-resize512}"
 # 测试数据根目录（保持原始大图，patch 推理）
 TEST_ROOT="${TEST_ROOT:-/home/root123/LF/WYM/SteelRailWay/rail_mvtec_gt_test}"
-# 输出根目录
+# 输出根目录（每个视角会写入 $SAVE_DIR/CamN/）
 SAVE_DIR="${SAVE_DIR:-./outputs/rail_all}"
 
 # ============== 训练超参（速度 + 质量平衡） ==============
@@ -49,7 +49,9 @@ VIEWS="${VIEWS:-1 2 3 4 5 6 7 8}"
 DEVICE="${DEVICE:-cuda:0}"
 
 mkdir -p "$SAVE_DIR"
-SUMMARY="$SAVE_DIR/summary_$(date +%Y%m%d_%H%M%S).txt"
+SUMMARY_DIR="$SAVE_DIR/_summaries"
+mkdir -p "$SUMMARY_DIR"
+SUMMARY="$SUMMARY_DIR/summary_$(date +%Y%m%d_%H%M%S).txt"
 echo "Training started at $(date)" | tee "$SUMMARY"
 echo "Train root: $TRAIN_ROOT" | tee -a "$SUMMARY"
 echo "Test root:  $TEST_ROOT" | tee -a "$SUMMARY"
@@ -57,8 +59,12 @@ echo "Views:      $VIEWS" | tee -a "$SUMMARY"
 echo "" | tee -a "$SUMMARY"
 
 for v in $VIEWS; do
+    CAM_SAVE_DIR="$SAVE_DIR/Cam${v}"
+    mkdir -p "$CAM_SAVE_DIR"
+
     echo "==========================================" | tee -a "$SUMMARY"
     echo "  Training Cam${v}" | tee -a "$SUMMARY"
+    echo "  Output: $CAM_SAVE_DIR" | tee -a "$SUMMARY"
     echo "==========================================" | tee -a "$SUMMARY"
 
     python train/train_trd_rail.py \
@@ -77,11 +83,11 @@ for v in $VIEWS; do
         --train_sample_num $TRAIN_SAMPLE_NUM \
         --sampling_mode $SAMPLING_MODE \
         --device     "$DEVICE" \
-        --save_dir   "$SAVE_DIR" \
+        --save_dir   "$CAM_SAVE_DIR" \
         2>&1 | tee -a "$SUMMARY"
 
     echo "" | tee -a "$SUMMARY"
 done
 
 echo "All views finished at $(date)" | tee -a "$SUMMARY"
-echo "Models saved under: $SAVE_DIR" | tee -a "$SUMMARY"
+echo "Models saved under: $SAVE_DIR/CamN" | tee -a "$SUMMARY"

@@ -4,10 +4,11 @@
 批量补评估 outputs/rail_all 下的单视角模型。
 
 默认行为：
-    - 自动查找 outputs/rail_all/*camN*/best_camN.pth
+    - 自动查找 outputs/rail_all/CamN/*camN*/best_camN.pth
+      也兼容旧的 outputs/rail_all/*camN*/best_camN.pth
     - 对 cam1-8 顺序评估
     - 把每个 cam 的最终结果追加回对应 run 的 training.log
-    - 在 outputs/rail_all 下生成 eval_summary_*.csv / eval_summary_*.txt
+    - 在 outputs/rail_all/_summaries 下生成 eval_summary_*.csv / eval_summary_*.txt
 
 注意：当前 rail_mvtec_gt_test 只有 cam1-6，cam7/cam8 会被记录为 N/A。
 """
@@ -34,8 +35,18 @@ from scripts.eval_from_ckpt import append_eval_log, evaluate_from_args
 
 
 def find_latest_ckpt(runs_root: Path, view_id: int) -> Path | None:
-    pattern = f"*cam{view_id}_*/best_cam{view_id}.pth"
-    candidates = list(runs_root.glob(pattern))
+    patterns = [
+        runs_root / f"Cam{view_id}" / f"*cam{view_id}_*" / f"best_cam{view_id}.pth",
+        runs_root / f"*cam{view_id}_*" / f"best_cam{view_id}.pth",
+    ]
+    candidates = []
+    seen = set()
+    for pattern in patterns:
+        for path in runs_root.glob(str(pattern.relative_to(runs_root))):
+            resolved = path.resolve()
+            if resolved not in seen:
+                candidates.append(path)
+                seen.add(resolved)
     if not candidates:
         return None
     candidates.sort(key=lambda p: (p.parent.stat().st_mtime, p.parent.name), reverse=True)
@@ -115,6 +126,8 @@ def write_csv_row(writer, result):
 def build_parser():
     parser = argparse.ArgumentParser(description="Evaluate all rail single-view checkpoints.")
     parser.add_argument("--runs_root", type=str, default="outputs/rail_all")
+    parser.add_argument("--summary_dir", type=str, default=None,
+                        help="默认写到 <runs_root>/_summaries")
     parser.add_argument("--train_root", type=str,
                         default=os.environ.get("TRAIN_ROOT", "/data1/Leaddo_data/20260327-resize512"))
     parser.add_argument("--test_root", type=str,
@@ -145,10 +158,12 @@ def main():
     args = build_parser().parse_args()
     runs_root = Path(args.runs_root)
     runs_root.mkdir(parents=True, exist_ok=True)
+    summary_root = Path(args.summary_dir) if args.summary_dir else runs_root / "_summaries"
+    summary_root.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary_csv = runs_root / f"eval_summary_{timestamp}.csv"
-    summary_txt = runs_root / f"eval_summary_{timestamp}.txt"
+    summary_csv = summary_root / f"eval_summary_{timestamp}.csv"
+    summary_txt = summary_root / f"eval_summary_{timestamp}.txt"
 
     fields = [
         "view_id", "status", "reason", "auroc", "best_epoch", "best_val_loss",

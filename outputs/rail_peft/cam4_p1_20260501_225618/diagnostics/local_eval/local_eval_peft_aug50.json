@@ -1,0 +1,41 @@
+{
+  "evaluated_at": "2026-05-01 23:36:37",
+  "view_id": 4,
+  "ckpt": "outputs/rail_all/Cam4/20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0/best_cam4.pth",
+  "depth_peft_ckpt": "outputs/rail_peft/cam4_p1_20260501_225618/final/final_peft_cam4.pth",
+  "train_root": "data_20260327",
+  "test_root": "rail_mvtec_gt_test_aug_cam4_normal50",
+  "status": "ok",
+  "reason": "",
+  "best_epoch": 100,
+  "best_val_loss": 1.335907906293869,
+  "auroc": 0.84,
+  "num_patches": 420,
+  "num_images": 60,
+  "num_abnormal": 10,
+  "num_normal": 50,
+  "score_min": 0.00405903672799468,
+  "score_max": 0.08409282565116882,
+  "scores_csv": "outputs/rail_peft/cam4_p1_20260501_225618/diagnostics/local_eval/local_eval_peft_aug50_scores.csv",
+  "output_log": "",
+  "depth_peft_gain": 0.16735412180423737,
+  "depth_peft_bias": -0.09140857309103012,
+  "depth_peft_meta": {
+    "kind": "DepthAffinePEFT",
+    "view_id": 4,
+    "gain": 0.16735412180423737,
+    "bias": -0.09140857309103012,
+    "train_good": [
+      "20250417_123456_Cam4_00079",
+      "20250417_123456_Cam4_00134",
+      "20250417_123456_Cam4_00152",
+      "20251112_191827_Cam4_00034",
+      "20251112_191827_Cam4_00063",
+      "20251112_191827_Cam4_00066",
+      "20251210_185619_Cam4_00034",
+      "20251210_185619_Cam4_00046"
+    ],
+    "test_good": [],
+    "created_at": "2026-05-01 23:15:03"
+  }
+}

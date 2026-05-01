@@ -9,4 +9,4 @@ cv_auroc_std: 0.246221
 final_peft_auroc_on_original_test: 0.662500
 final_gain: 0.16735412
 final_bias: -0.09140857
-final_peft_ckpt: outputs/rail_peft/cam4_p1_20260501_225618/final_peft_cam4.pth
+final_peft_ckpt: outputs/rail_peft/cam4_p1_20260501_225618/final/final_peft_cam4.pth

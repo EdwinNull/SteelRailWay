@@ -54,15 +54,17 @@ def cal_anomaly_map(fs_list, ft_list, out_size=256, amap_mode='mul'):
 
     a_map_list = []
     for i in range(len(fs_list)):
-        fs = fs_list[i]
-        ft = ft_list[i]
+        # AMP/bf16 前向会产生 BFloat16 特征，但后续需要转 NumPy。
+        # NumPy 不支持 BFloat16，这里统一转 fp32，也让指标计算更稳定。
+        fs = fs_list[i].float()
+        ft = ft_list[i].float()
         a_map = 1 - F.cosine_similarity(fs, ft)  # [B, H, W]
         a_map = torch.unsqueeze(a_map, dim=1)    # [B, 1, H, W]
         a_map = F.interpolate(a_map, size=out_size_tuple, mode='bilinear', align_corners=True)
         a_map = a_map[:, 0, :, :]                # [B, H, W] on GPU
 
         # 保存在 GPU 上的副本（按需转 numpy）
-        a_map_np = a_map.to('cpu').detach().numpy()
+        a_map_np = a_map.float().to('cpu').detach().numpy()
         a_map_list.append(a_map_np)
 
         if amap_mode == 'mul':
@@ -71,7 +73,7 @@ def cal_anomaly_map(fs_list, ft_list, out_size=256, amap_mode='mul'):
             anomaly_map += a_map
 
     # 最终结果一次性转 CPU
-    anomaly_map = anomaly_map.to('cpu').numpy()
+    anomaly_map = anomaly_map.float().to('cpu').numpy()
 
     if batch_size == 1:
         anomaly_map = anomaly_map[0]
@@ -98,12 +100,12 @@ def cal_l2dis(fs_list, ft_list, out_size=256, amap_mode='mul'):
 
     a_map_list = []
     for i in range(len(fs_list)):
-        fs = fs_list[i]
-        ft = ft_list[i]
+        fs = fs_list[i].float()
+        ft = ft_list[i].float()
         # 逐通道 L2 范数（||fs - ft||_2），dim=1 为通道维
         a_map = torch.norm(fs - ft, p=2, dim=1, keepdim=True)
         a_map = F.interpolate(a_map, size=out_size_tuple, mode='bilinear', align_corners=True)
-        a_map = a_map[:, 0, :, :].to('cpu').detach().numpy()  # [B, H, W]
+        a_map = a_map[:, 0, :, :].float().to('cpu').detach().numpy()  # [B, H, W]
         a_map_list.append(a_map)
         if amap_mode == 'mul':
             anomaly_map *= a_map

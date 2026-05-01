@@ -1,0 +1,20 @@
+{
+  "evaluated_at": "2026-05-01 10:11:20",
+  "view_id": 4,
+  "ckpt": "outputs/rail_all/20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0/best_cam4.pth",
+  "train_root": "/data1/Leaddo_data/20260327-resize512",
+  "test_root": "./rail_mvtec_gt_test",
+  "status": "ok",
+  "reason": "",
+  "best_epoch": 100,
+  "best_val_loss": 1.335907906293869,
+  "auroc": 0.3625,
+  "num_patches": 126,
+  "num_images": 18,
+  "num_abnormal": 10,
+  "num_normal": 8,
+  "score_min": 0.07901041954755783,
+  "score_max": 0.14084219932556152,
+  "scores_csv": "outputs/rail_all/20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0/best_cam4_test_scores.csv",
+  "output_log": "outputs/rail_all/20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0/training.log"
+}

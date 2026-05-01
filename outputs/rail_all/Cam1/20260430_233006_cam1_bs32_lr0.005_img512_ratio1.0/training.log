@@ -643,3 +643,21 @@ Epoch 100 - Val Loss RGB: 1.3078, Val Loss Depth: 0.0000, Total: 1.3078
 Saved best model to ./outputs/rail_all/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1.pth
 
 Training finished! Best Val Loss: 1.3078
+
+==================================================
+Post-hoc evaluation on test set (best checkpoint)
+==================================================
+Evaluation time: 2026-05-01 12:19:35
+Script: scripts/eval_from_ckpt.py
+Checkpoint: outputs/rail_all/Cam1/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1.pth
+Status: ok
+Final Result - Cam 1
+  Best epoch: 100
+  Best Val Loss: 1.3078
+  Test AUROC: 0.7455
+  #patches: 147
+  #images: 21
+  #abnormal: 11, #normal: 10
+  score range: [0.0164, 0.0448]
+  Scores CSV: outputs/rail_all/Cam1/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1_test_scores.csv
+==================================================

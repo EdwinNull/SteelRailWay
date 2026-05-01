@@ -1,7 +1,7 @@
 {
-  "evaluated_at": "2026-05-01 10:10:21",
+  "evaluated_at": "2026-05-01 12:19:35",
   "view_id": 1,
-  "ckpt": "outputs/rail_all/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1.pth",
+  "ckpt": "outputs/rail_all/Cam1/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1.pth",
   "train_root": "/data1/Leaddo_data/20260327-resize512",
   "test_root": "./rail_mvtec_gt_test",
   "status": "ok",
@@ -15,6 +15,6 @@
   "num_normal": 10,
   "score_min": 0.016386931762099266,
   "score_max": 0.044797465205192566,
-  "scores_csv": "outputs/rail_all/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1_test_scores.csv",
-  "output_log": "outputs/rail_all/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/training.log"
+  "scores_csv": "outputs/rail_all/Cam1/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/best_cam1_test_scores.csv",
+  "output_log": "outputs/rail_all/Cam1/20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0/training.log"
 }

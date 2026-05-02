@@ -1,0 +1,14 @@
+Comparison: cam4_depth_isolated
+Exported frames: 12
+- 20250417_123456_Cam4_00079 (good): delta_contribution=1.00000000, net_flip_count=10, reasons=top_positive_delta,positive_pair_normal,positive_pair_normal,positive_pair_normal,manual_focus
+- 20251210_185619_Cam4_00024 (broken): delta_contribution=0.62500000, net_flip_count=5, reasons=top_positive_delta,manual_focus
+- 20251112_191827_Cam4_00015 (broken): delta_contribution=0.50000000, net_flip_count=4, reasons=top_positive_delta
+- 20251112_191827_Cam4_00095 (broken): delta_contribution=0.50000000, net_flip_count=4, reasons=positive_pair_abnormal
+- 20251210_185619_Cam4_00034 (good): delta_contribution=0.50000000, net_flip_count=5, reasons=positive_pair_normal
+- 20251112_191827_Cam4_00028 (broken): delta_contribution=0.37500000, net_flip_count=3, reasons=positive_pair_abnormal,positive_pair_abnormal,positive_pair_abnormal
+- 20250417_123456_Cam4_00134 (good): delta_contribution=0.30000000, net_flip_count=3, reasons=positive_pair_normal
+- 20250417_123456_Cam4_00140 (broken): delta_contribution=0.12500000, net_flip_count=1, reasons=positive_pair_abnormal
+- 20251112_191827_Cam4_00063 (good): delta_contribution=0.10000000, net_flip_count=1, reasons=negative_pair_normal
+- 20250417_123456_Cam4_00162 (broken): delta_contribution=0.00000000, net_flip_count=0, reasons=negative_pair_abnormal
+- 20251112_191827_Cam4_00054 (broken): delta_contribution=0.00000000, net_flip_count=0, reasons=negative_pair_abnormal,negative_pair_abnormal
+- 20251210_185619_Cam4_00046 (good): delta_contribution=-0.10000000, net_flip_count=-1, reasons=top_negative_delta,negative_pair_normal,negative_pair_normal,manual_focus

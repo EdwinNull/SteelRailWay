@@ -1,0 +1,11 @@
+Comparison: cam5_fusion
+Exported frames: 9
+- 20251112_191827_Cam5_00067 (broken): delta_contribution=0.42857143, net_flip_count=3, reasons=top_positive_delta,positive_pair_abnormal,positive_pair_abnormal,positive_pair_abnormal,manual_focus
+- 20251112_191827_Cam5_00022 (good): delta_contribution=0.28571429, net_flip_count=2, reasons=top_positive_delta,positive_pair_normal,positive_pair_normal,manual_focus
+- 20251112_191827_Cam5_00012 (good): delta_contribution=0.14285714, net_flip_count=1, reasons=top_positive_delta,positive_pair_normal
+- 20251112_191827_Cam5_00036 (good): delta_contribution=0.14285714, net_flip_count=1, reasons=positive_pair_normal
+- 20251112_191827_Cam5_00046 (good): delta_contribution=0.14285714, net_flip_count=1, reasons=positive_pair_normal
+- 20251112_191827_Cam5_00123 (broken): delta_contribution=0.14285714, net_flip_count=1, reasons=positive_pair_abnormal,positive_pair_abnormal,negative_pair_abnormal,manual_focus
+- 20251112_191827_Cam5_00007 (broken): delta_contribution=-0.14285714, net_flip_count=-1, reasons=top_negative_delta,negative_pair_abnormal
+- 20251112_191827_Cam5_00033 (good): delta_contribution=-0.14285714, net_flip_count=-1, reasons=top_negative_delta,negative_pair_normal
+- 20251112_191827_Cam5_00040 (good): delta_contribution=-0.14285714, net_flip_count=-1, reasons=negative_pair_normal,manual_focus

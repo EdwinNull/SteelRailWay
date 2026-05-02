@@ -1,0 +1,25 @@
+Comparison: cam4_depth
+Source: depth
+Baseline dir: cam4_baseline
+Candidate dir: cam4_with_cam4peft
+Baseline AUROC: 0.36250000
+Candidate AUROC: 0.67500000
+AUROC delta: 0.31250000
+Positive pair flips: 30
+Negative pair flips: 5
+Net pair flips: 25
+
+Baseline class stats: normal_mean=0.10829751, normal_median=0.10565675, abnormal_mean=0.09980320, abnormal_median=0.10001657
+Candidate class stats: normal_mean=0.00543407, normal_median=0.00431009, abnormal_mean=0.01426878, abnormal_median=0.00697973
+
+Top positive frames by delta_contribution:
+  20250417_123456_Cam4_00079 label=0 delta_contribution=1.00000000 net_flip_count=10 baseline_rank=0 candidate_rank=17
+  20251210_185619_Cam4_00024 label=1 delta_contribution=0.87500000 net_flip_count=7 baseline_rank=15 candidate_rank=3
+  20251112_191827_Cam4_00011 label=1 delta_contribution=0.50000000 net_flip_count=4 baseline_rank=11 candidate_rank=7
+  20251112_191827_Cam4_00015 label=1 delta_contribution=0.50000000 net_flip_count=4 baseline_rank=7 candidate_rank=1
+  20251112_191827_Cam4_00088 label=1 delta_contribution=0.50000000 net_flip_count=4 baseline_rank=17 candidate_rank=11
+
+Top negative frames by delta_contribution:
+  20251210_185619_Cam4_00046 label=0 delta_contribution=-0.30000000 net_flip_count=-3 baseline_rank=16 candidate_rank=8
+  20250417_123456_Cam4_00140 label=1 delta_contribution=-0.12500000 net_flip_count=-1 baseline_rank=4 candidate_rank=10
+  20251112_191827_Cam4_00054 label=1 delta_contribution=-0.12500000 net_flip_count=-1 baseline_rank=12 candidate_rank=15

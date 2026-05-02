@@ -1,0 +1,17 @@
+Branch rank analysis
+created_at: 2026-05-02 11:48:06
+scores_root: outputs\rail_peft\cam4_p1_20260501_225618\diagnostics\branch_isolation_server
+comparisons: 3
+
+cam4_depth (depth): baseline=0.36250000, candidate=0.67500000, delta=0.31250000, pair_flips=+30/-5 (net 25)
+  top_positive_frame=20250417_123456_Cam4_00079 (label=0, delta_contribution=1.00000000, net_flip_count=10)
+  top_negative_frame=20251210_185619_Cam4_00046 (label=0, delta_contribution=-0.30000000, net_flip_count=-3)
+
+cam4_depth_isolated (depth_isolated): baseline=0.32500000, candidate=0.65000000, delta=0.32500000, pair_flips=+29/-3 (net 26)
+  top_positive_frame=20250417_123456_Cam4_00079 (label=0, delta_contribution=1.00000000, net_flip_count=10)
+  top_negative_frame=20251210_185619_Cam4_00046 (label=0, delta_contribution=-0.10000000, net_flip_count=-1)
+
+cam5_fusion (fusion): baseline=0.75510204, candidate=0.81632653, delta=0.06122449, pair_flips=+5/-2 (net 3)
+  top_positive_frame=20251112_191827_Cam5_00067 (label=1, delta_contribution=0.42857143, net_flip_count=3)
+  top_negative_frame=20251112_191827_Cam5_00007 (label=1, delta_contribution=-0.14285714, net_flip_count=-1)
+

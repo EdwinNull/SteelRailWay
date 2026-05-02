@@ -185,6 +185,15 @@ def build_parser():
     parser.add_argument("--assist_stats_dir", type=str, default=None,
                         help="可选：训练域辅助特征均值缓存目录")
     parser.add_argument("--assist_stats_batch_size", type=int, default=16)
+    parser.add_argument("--train_sample_ratio", type=float, default=1.0,
+                        help="仅用于 isolated train-mean 统计的训练集采样比例")
+    parser.add_argument("--train_sample_num", type=int, default=None,
+                        help="仅用于 isolated train-mean 统计的训练集采样数量；<=0 表示使用全量")
+    parser.add_argument("--sampling_mode", type=str, default="uniform_time",
+                        choices=["uniform_time", "random"],
+                        help="仅用于 isolated train-mean 统计的训练集采样模式")
+    parser.add_argument("--train_sample_seed", type=int, default=42,
+                        help="仅用于 isolated train-mean 统计的训练集采样随机种子")
     return parser
 
 
@@ -269,6 +278,10 @@ def main():
                 assist_fill=args.assist_fill,
                 assist_stats_dir=args.assist_stats_dir,
                 assist_stats_batch_size=args.assist_stats_batch_size,
+                train_sample_ratio=args.train_sample_ratio,
+                train_sample_num=args.train_sample_num,
+                sampling_mode=args.sampling_mode,
+                train_sample_seed=args.train_sample_seed,
             )
 
             try:

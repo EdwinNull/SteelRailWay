@@ -116,6 +116,15 @@ def build_parser():
     parser.add_argument("--append_log", action="store_true", default=False)
     parser.add_argument("--assist_fill", type=str, default="train_mean",
                         choices=["train_mean", "zeros"])
+    parser.add_argument("--train_sample_ratio", type=float, default=1.0,
+                        help="用于 train-mean assist 特征统计的训练集采样比例")
+    parser.add_argument("--train_sample_num", type=int, default=1200,
+                        help="用于 train-mean assist 特征统计的训练集采样数量，默认贴近训练口径；<=0 表示使用全量")
+    parser.add_argument("--sampling_mode", type=str, default="uniform_time",
+                        choices=["uniform_time", "random"],
+                        help="用于 train-mean assist 特征统计的训练集采样模式")
+    parser.add_argument("--train_sample_seed", type=int, default=42,
+                        help="用于 train-mean assist 特征统计的采样随机种子")
     return parser
 
 
@@ -148,6 +157,10 @@ def make_eval_args(args, ckpt: str, view_id: int, config_dir: Path,
         score_source="fusion",
         assist_fill=args.assist_fill,
         assist_stats_dir=str(assist_stats_dir),
+        train_sample_ratio=args.train_sample_ratio,
+        train_sample_num=args.train_sample_num,
+        sampling_mode=args.sampling_mode,
+        train_sample_seed=args.train_sample_seed,
     )
 
 
@@ -289,6 +302,10 @@ def write_summary_txt(path: Path, args, depth_peft_ckpt: str | None, assist_stat
         f.write(f"num_workers: {args.num_workers}\n")
         f.write(f"use_patch: {args.use_patch}\n")
         f.write(f"assist_fill: {args.assist_fill}\n")
+        f.write(f"train_sample_ratio: {args.train_sample_ratio}\n")
+        f.write(f"train_sample_num: {args.train_sample_num}\n")
+        f.write(f"sampling_mode: {args.sampling_mode}\n")
+        f.write(f"train_sample_seed: {args.train_sample_seed}\n")
         f.write(f"assist_stats_dir: {assist_stats_dir}\n")
         f.write(f"depth_peft_ckpt: {depth_peft_ckpt or 'N/A'}\n\n")
 
@@ -359,6 +376,10 @@ def precompute_assist_stats(args, view_id: int, assist_stats_dir: Path) -> None:
         channels_last=args.channels_last,
         assist_fill=args.assist_fill,
         assist_stats_dir=str(assist_stats_dir),
+        train_sample_ratio=args.train_sample_ratio,
+        train_sample_num=args.train_sample_num,
+        sampling_mode=args.sampling_mode,
+        train_sample_seed=args.train_sample_seed,
     )
     ensure_assist_feature_means(
         stats_args,

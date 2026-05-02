@@ -211,6 +211,14 @@ def build_assist_feature_list(modality, like_feats, assist_fill, assist_feature_
     return expand_feature_means(assist_feature_means[modality], like_feats)
 
 
+def resolve_train_sample_num(args):
+    value = getattr(args, "train_sample_num", None)
+    if value is None:
+        return None
+    value = int(value)
+    return value if value > 0 else None
+
+
 def build_assist_stats_dataset(args):
     return RailDualModalDataset(
         train_root=args.train_root,
@@ -220,10 +228,11 @@ def build_assist_stats_dataset(args):
         img_size=args.img_size,
         depth_norm=args.depth_norm,
         use_patch=False,
-        train_sample_ratio=1.0,
-        train_sample_num=None,
+        train_sample_ratio=float(getattr(args, "train_sample_ratio", 1.0)),
+        train_sample_num=resolve_train_sample_num(args),
+        random_seed=int(getattr(args, "train_sample_seed", 42)),
         train_val_test_split=[1.0, 0.0, 0.0],
-        sampling_mode="uniform_time",
+        sampling_mode=str(getattr(args, "sampling_mode", "uniform_time")),
         preload=args.preload,
         preload_workers=args.preload_workers,
     )
@@ -278,6 +287,13 @@ def ensure_assist_feature_means(
     if not missing_modalities:
         return loaded
 
+    print(
+        "Assist stats sampling: "
+        f"train_sample_num={resolve_train_sample_num(args)}, "
+        f"train_sample_ratio={getattr(args, 'train_sample_ratio', 1.0)}, "
+        f"sampling_mode={getattr(args, 'sampling_mode', 'uniform_time')}, "
+        f"train_sample_seed={getattr(args, 'train_sample_seed', 42)}"
+    )
     print(f"Computing train-mean assist features for Cam{args.view_id}: {', '.join(missing_modalities)}")
     stats_dataset = build_assist_stats_dataset(args)
     if len(stats_dataset) == 0:
@@ -536,6 +552,15 @@ def build_parser():
                         help="isolated 分支的辅助特征替代策略，默认 train_mean")
     parser.add_argument("--assist_stats_dir", type=str, default=None,
                         help="可选：训练域辅助特征均值的缓存目录")
+    parser.add_argument("--train_sample_ratio", type=float, default=1.0,
+                        help="仅用于 isolated train-mean 统计的训练集采样比例")
+    parser.add_argument("--train_sample_num", type=int, default=None,
+                        help="仅用于 isolated train-mean 统计的训练集采样数量，优先级高于 ratio；<=0 表示使用全量")
+    parser.add_argument("--sampling_mode", type=str, default="uniform_time",
+                        choices=["uniform_time", "random"],
+                        help="仅用于 isolated train-mean 统计的训练集采样模式")
+    parser.add_argument("--train_sample_seed", type=int, default=42,
+                        help="仅用于 isolated train-mean 统计的训练集采样随机种子")
     return parser
 
 
@@ -575,6 +600,10 @@ def evaluate_from_args(args):
         "score_source_selected": str(getattr(args, "score_source", "fusion")),
         "assist_fill_mode": str(getattr(args, "assist_fill", "train_mean")),
         "assist_stats_dir": str(getattr(args, "assist_stats_dir", "") or ""),
+        "train_sample_ratio": float(getattr(args, "train_sample_ratio", 1.0)),
+        "train_sample_num": resolve_train_sample_num(args),
+        "sampling_mode": str(getattr(args, "sampling_mode", "uniform_time")),
+        "train_sample_seed": int(getattr(args, "train_sample_seed", 42)),
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "ok",

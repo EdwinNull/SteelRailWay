@@ -25,5 +25,6 @@
 - 分支 AUROC / 真隔离诊断：`scripts/diagnostics/eval_branch_auroc.py`
 - 逐图排序变化分析：`scripts/diagnostics/analyze_branch_rank_changes.py`
 - 关键帧导出与 depth 预览：`scripts/diagnostics/export_key_frames.py`
+- 关键帧 anomaly map 并排可视化：`scripts/diagnostics/export_key_frame_anomaly_maps.py`
 - 整理 `outputs/rail_all`：`scripts/maintenance/organize_rail_all.py`
 - 整理 `outputs/rail_peft`：`scripts/maintenance/organize_rail_peft_runs.py`

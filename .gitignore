@@ -181,4 +181,5 @@ data/
 outputs/**/*.pt
 outputs/**/*.pth
 outputs/**/*.ckpt
+outputs/rail_peft
 # 注意：outputs/**/*.log 会被保留（已移除全局 *.log 规则）

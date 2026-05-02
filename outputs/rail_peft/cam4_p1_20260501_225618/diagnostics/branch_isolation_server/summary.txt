@@ -1,0 +1,40 @@
+Branch isolation diagnostics
+created_at: 2026-05-02 11:24:28
+runs_root: outputs/rail_all
+train_root: /data1/Leaddo_data/20260327-resize512
+test_root: /home/root123/LF/WYM/SteelRailWay/rail_mvtec_gt_test
+views: 1 4 5
+device: cuda:0
+precision: fp32
+batch_size: 32
+assist_stats_batch_size: 32
+num_workers: 8
+use_patch: True
+assist_fill: train_mean
+train_sample_ratio: 1.0
+train_sample_num: 1200
+sampling_mode: uniform_time
+train_sample_seed: 42
+assist_stats_dir: outputs/rail_peft/cam4_p1_20260501_225618/diagnostics/branch_isolation_server/reference_stats
+depth_peft_ckpt: outputs/rail_peft/cam4_p1_20260501_225618/final_peft_cam4.pth
+
+Cross-conditioned AUROC
+Cam1 baseline: rgb_cross=0.44545455, depth_cross=0.71818182, fusion=0.74545455, d_rgb_cross=0.00000000, d_depth_cross=0.00000000, d_fusion=0.00000000
+Cam1 with_cam4peft: rgb_cross=0.80909091, depth_cross=0.64545455, fusion=0.71818182, d_rgb_cross=0.36363636, d_depth_cross=-0.07272727, d_fusion=-0.02727273
+Cam4 baseline: rgb_cross=0.70000000, depth_cross=0.36250000, fusion=0.35000000, d_rgb_cross=0.00000000, d_depth_cross=0.00000000, d_fusion=-0.00000000
+Cam4 with_cam4peft: rgb_cross=0.60000000, depth_cross=0.67500000, fusion=0.68750000, d_rgb_cross=-0.10000000, d_depth_cross=0.31250000, d_fusion=0.33750000
+Cam5 baseline: rgb_cross=0.77551020, depth_cross=0.75510204, fusion=0.75510204, d_rgb_cross=-0.00000000, d_depth_cross=-0.00000000, d_fusion=-0.00000000
+Cam5 with_cam4peft: rgb_cross=0.77551020, depth_cross=0.71428571, fusion=0.81632653, d_rgb_cross=-0.00000000, d_depth_cross=-0.04081633, d_fusion=0.06122449
+
+Isolated AUROC
+Cam1 baseline: rgb_isolated=0.74545455, depth_isolated=0.69090909, d_rgb_isolated=0.00000000, d_depth_isolated=-0.00000000
+Cam1 with_cam4peft: rgb_isolated=0.74545455, depth_isolated=0.63636364, d_rgb_isolated=0.00000000, d_depth_isolated=-0.05454545
+Cam4 baseline: rgb_isolated=0.73750000, depth_isolated=0.32500000, d_rgb_isolated=0.00000000, d_depth_isolated=0.00000000
+Cam4 with_cam4peft: rgb_isolated=0.73750000, depth_isolated=0.65000000, d_rgb_isolated=0.00000000, d_depth_isolated=0.32500000
+Cam5 baseline: rgb_isolated=0.69387755, depth_isolated=0.79591837, d_rgb_isolated=-0.00000000, d_depth_isolated=0.00000000
+Cam5 with_cam4peft: rgb_isolated=0.69387755, depth_isolated=0.77551020, d_rgb_isolated=-0.00000000, d_depth_isolated=-0.02040817
+
+Interpretation
+- Cam4 baseline: depth_cross=0.3625, depth_isolated=0.3250，隔离后提升很小，说明 Depth 分支本体就偏弱，不只是被 crossmodal 污染。
+- Cam4 + PEFT: depth_cross Δ=+0.3125, depth_isolated Δ=+0.3250，收益大体同步，说明 PEFT 主要在修 Depth 分支本体。
+- Cam5 + Cam4 PEFT: cross Δ(rgb=+0.0000, depth=-0.0408), isolated Δ(rgb=+0.0000, depth=-0.0204)，isolated 也明显变化，说明影响不只在耦合层，主分支表征本身也被带动。

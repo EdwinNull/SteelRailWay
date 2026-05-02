@@ -1,0 +1,20 @@
+Branch-wise AUROC diagnostics
+created_at: 2026-05-02 00:45:33
+runs_root: outputs/rail_all
+train_root: G:/SteelRailWay/data_20260327
+test_root: G:/SteelRailWay/rail_mvtec_gt_test
+views: 1 4 5
+device: cuda:0
+precision: fp32
+batch_size: 2
+num_workers: 0
+use_patch: True
+depth_peft_ckpt: outputs\rail_peft\cam4_p1_20260501_225618\final\final_peft_cam4.pth
+
+Columns: view_id, config_name, auroc_rgb, auroc_depth, auroc_fusion, delta_rgb_vs_baseline, delta_depth_vs_baseline, delta_fusion_vs_baseline
+Cam1 baseline: rgb=0.81818182, depth=0.72727273, fusion=0.73636364, d_rgb=0.00000000, d_depth=0.00000000, d_fusion=0.00000000
+Cam1 with_cam4peft: rgb=0.79090909, depth=0.70909091, fusion=0.73636364, d_rgb=-0.02727273, d_depth=-0.01818182, d_fusion=0.00000000
+Cam4 baseline: rgb=0.70000000, depth=0.36250000, fusion=0.35000000, d_rgb=0.00000000, d_depth=0.00000000, d_fusion=-0.00000000
+Cam4 with_cam4peft: rgb=0.60000000, depth=0.67500000, fusion=0.68750000, d_rgb=-0.10000000, d_depth=0.31250000, d_fusion=0.33750000
+Cam5 baseline: rgb=0.85714286, depth=0.73469388, fusion=0.75510204, d_rgb=0.00000000, d_depth=0.00000000, d_fusion=-0.00000000
+Cam5 with_cam4peft: rgb=0.81632653, depth=0.67346939, fusion=0.83673469, d_rgb=-0.04081633, d_depth=-0.06122449, d_fusion=0.08163265

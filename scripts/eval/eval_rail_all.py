@@ -32,7 +32,7 @@ from types import SimpleNamespace
 
 import torch
 
-from scripts.eval.eval_from_ckpt import append_eval_log, evaluate_from_args
+from scripts.eval.eval_from_ckpt import append_eval_log, default_scores_csv_path, evaluate_from_args
 
 
 def find_latest_ckpt(runs_root: Path, view_id: int) -> Path | None:
@@ -61,6 +61,7 @@ def base_result(args, view_id, ckpt=None, run_dir=None, log_file=None):
         "run_dir": str(run_dir) if run_dir else "",
         "ckpt": str(ckpt) if ckpt else "",
         "depth_peft_ckpt": "",
+        "score_source_selected": str(getattr(args, "score_source", "fusion")),
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "skipped",
@@ -94,6 +95,7 @@ def append_summary_text(path: Path, result: dict):
     best_val_text = "N/A" if best_val is None else f"{float(best_val):.4f}"
     line = (
         f"Cam{result['view_id']}: status={result['status']}, "
+        f"score_source={result.get('score_source_selected', 'fusion')}, "
         f"AUROC={auroc}, best_epoch={result.get('best_epoch', 'N/A')}, "
         f"best_val_loss={best_val_text}, images={result['num_images']}, "
         f"abnormal={result['num_abnormal']}, normal={result['num_normal']}"
@@ -109,6 +111,7 @@ def write_csv_row(writer, result):
         "view_id": result.get("view_id"),
         "status": result.get("status"),
         "reason": result.get("reason"),
+        "score_source": result.get("score_source_selected"),
         "auroc": format_value(result.get("auroc")),
         "best_epoch": result.get("best_epoch"),
         "best_val_loss": format_value(result.get("best_val_loss")),
@@ -168,6 +171,9 @@ def build_parser():
     parser.add_argument("--no_append_log", action="store_false", dest="append_log")
     parser.add_argument("--depth_peft_map", type=str, default=None,
                         help='可选：JSON 文件或 JSON 字符串，如 {"4": "path/to/final_peft_cam4.pth"}')
+    parser.add_argument("--score_source", type=str, default="fusion",
+                        choices=["fusion", "rgb", "depth"],
+                        help="顶层 AUROC / scores_csv 使用的分支来源，默认 fusion")
     return parser
 
 
@@ -184,7 +190,7 @@ def main():
     summary_txt = summary_root / f"eval_summary_{timestamp}.txt"
 
     fields = [
-        "view_id", "status", "reason", "auroc", "best_epoch", "best_val_loss",
+        "view_id", "status", "reason", "score_source", "auroc", "best_epoch", "best_val_loss",
         "num_patches", "num_images", "num_abnormal", "num_normal",
         "score_min", "score_max", "run_dir", "ckpt", "depth_peft_ckpt",
         "scores_csv", "log_file",
@@ -196,6 +202,7 @@ def main():
         f.write(f"Train root: {args.train_root}\n")
         f.write(f"Test root: {args.test_root}\n")
         f.write(f"Views: {' '.join(map(str, args.views))}\n\n")
+        f.write(f"Score source: {args.score_source}\n\n")
         if depth_peft_map:
             f.write(f"Depth PEFT map: {depth_peft_map}\n\n")
 
@@ -220,7 +227,7 @@ def main():
 
             run_dir = ckpt.parent
             log_file = run_dir / "training.log"
-            scores_csv = run_dir / f"best_cam{view_id}_test_scores.csv"
+            scores_csv = Path(default_scores_csv_path(ckpt, args.score_source))
             result_json = run_dir / f"eval_cam{view_id}_result.json"
             depth_peft_ckpt = depth_peft_map.get(view_id, "")
 
@@ -246,6 +253,8 @@ def main():
                 scores_csv=str(scores_csv),
                 result_json=str(result_json),
                 depth_peft_ckpt=depth_peft_ckpt,
+                score_source=args.score_source,
+                scores_dir=None,
             )
 
             try:

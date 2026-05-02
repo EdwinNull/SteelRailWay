@@ -25,6 +25,7 @@ if str(_PROJ_ROOT) not in sys.path:
 # <<< path-bootstrap <<<
 
 import argparse
+import csv
 import json
 from contextlib import nullcontext
 from datetime import datetime
@@ -38,6 +39,8 @@ from models.trd.decoder import ResNet50DualModalDecoder
 from eval.eval_utils import cal_anomaly_map
 from rail_peft import DepthAffinePEFT, DepthEncoderWithPEFT
 from sklearn.metrics import roc_auc_score
+
+SCORE_SOURCES = ("rgb", "depth", "fusion")
 
 
 try:
@@ -115,12 +118,38 @@ def format_metric(value):
     return f"{value:.4f}"
 
 
-def write_scores_csv(path, scores, labels):
-    with open(path, "w") as f:
-        f.write("rank,score,label\n")
-        order = np.argsort(-scores)
-        for rank, i in enumerate(order):
-            f.write(f"{rank},{scores[i]:.6f},{labels[i]}\n")
+def format_metric_triplet(metric_map):
+    parts = []
+    for source in SCORE_SOURCES:
+        parts.append(f"{source}={format_metric(metric_map.get(source))}")
+    return ", ".join(parts)
+
+
+def write_scores_csv(path, frame_ids, scores, labels):
+    order = np.argsort(-scores)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["rank", "frame_id", "score", "label"])
+        writer.writeheader()
+        for rank, idx in enumerate(order):
+            writer.writerow({
+                "rank": rank,
+                "frame_id": frame_ids[idx],
+                "score": f"{float(scores[idx]):.8f}",
+                "label": int(labels[idx]),
+            })
+
+
+def default_scores_csv_path(ckpt_path, score_source):
+    ckpt_path = str(ckpt_path)
+    if score_source == "fusion":
+        return ckpt_path.replace(".pth", "_test_scores.csv")
+    return ckpt_path.replace(".pth", f"_test_scores_{score_source}.csv")
+
+
+def batch_map_to_scores(amap):
+    if amap.ndim == 3:
+        return amap.reshape(amap.shape[0], -1).max(axis=1)
+    return np.array([amap.max()])
 
 
 def append_eval_log(log_file, result):
@@ -145,6 +174,7 @@ def append_eval_log(log_file, result):
     msg += f"Checkpoint: {result['ckpt']}\n"
     if result.get("depth_peft_ckpt"):
         msg += f"Depth PEFT: {result['depth_peft_ckpt']}\n"
+    msg += f"Score source: {result.get('score_source_selected', 'fusion')}\n"
     msg += f"Status: {status}"
     if reason:
         msg += f" ({reason})"
@@ -153,6 +183,8 @@ def append_eval_log(log_file, result):
     msg += f"  Best epoch: {result.get('best_epoch', 'N/A')}\n"
     msg += f"  Best Val Loss: {best_val_loss_text}\n"
     msg += f"  Test AUROC: {auroc}\n"
+    if result.get("auroc_by_source"):
+        msg += f"  AUROC by source: {format_metric_triplet(result['auroc_by_source'])}\n"
     msg += f"  #patches: {result['num_patches']}\n"
     msg += f"  #images: {result['num_images']}\n"
     msg += f"  #abnormal: {result['num_abnormal']}, #normal: {result['num_normal']}\n"
@@ -173,7 +205,7 @@ def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
     student_rgb.eval()
     student_depth.eval()
 
-    img_scores = {}
+    img_scores = {source: {} for source in SCORE_SOURCES}
     img_labels = {}
 
     for data in test_loader:
@@ -198,38 +230,59 @@ def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
 
         amap_rgb, _ = cal_anomaly_map(feat_s_rgb, feat_t_rgb, out_size=(256, 256), amap_mode='mul')
         amap_depth, _ = cal_anomaly_map(feat_s_depth, feat_t_depth, out_size=(256, 256), amap_mode='mul')
-        amap = amap_rgb + amap_depth
+        amap_by_source = {
+            "rgb": amap_rgb,
+            "depth": amap_depth,
+            "fusion": amap_rgb + amap_depth,
+        }
+        batch_scores = {
+            source: batch_map_to_scores(amap)
+            for source, amap in amap_by_source.items()
+        }
 
-        if amap.ndim == 3:
-            scores = amap.reshape(amap.shape[0], -1).max(axis=1)
-        else:
-            scores = np.array([amap.max()])
-
-        for score, label, fid in zip(scores, labels, frame_ids):
-            if fid not in img_scores:
-                img_scores[fid] = []
+        for idx, (label, fid) in enumerate(zip(labels, frame_ids)):
+            if fid not in img_labels:
                 img_labels[fid] = int(label)
-            img_scores[fid].append(float(score))
+            for source in SCORE_SOURCES:
+                img_scores[source].setdefault(fid, []).append(float(batch_scores[source][idx]))
 
-    image_scores = []
-    image_labels = []
-    for fid in sorted(img_scores.keys()):
-        image_scores.append(max(img_scores[fid]))
-        image_labels.append(img_labels[fid])
+    frame_ids = sorted(img_labels.keys())
+    image_labels = np.array([img_labels[fid] for fid in frame_ids], dtype=np.int64)
 
-    image_scores = np.array(image_scores)
-    image_labels = np.array(image_labels)
-
-    if len(image_scores) == 0:
+    if len(frame_ids) == 0:
         print("Warning: no test samples, AUROC = N/A")
-        return None, image_scores, image_labels
+        return {
+            "frame_ids": [],
+            "labels": image_labels,
+            "scores_by_source": {
+                source: np.array([], dtype=np.float64) for source in SCORE_SOURCES
+            },
+            "auroc_by_source": {
+                source: None for source in SCORE_SOURCES
+            },
+        }
 
-    if len(np.unique(image_labels)) < 2:
+    single_class = len(np.unique(image_labels)) < 2
+    if single_class:
         print("Warning: only one class in test set, AUROC = N/A")
-        return None, image_scores, image_labels
+    scores_by_source = {}
+    auroc_by_source = {}
+    for source in SCORE_SOURCES:
+        image_scores = np.array(
+            [max(img_scores[source][fid]) for fid in frame_ids],
+            dtype=np.float64,
+        )
+        scores_by_source[source] = image_scores
+        auroc_by_source[source] = (
+            None if single_class else float(roc_auc_score(image_labels, image_scores))
+        )
 
-    auroc = roc_auc_score(image_labels, image_scores)
-    return auroc, image_scores, image_labels
+    return {
+        "frame_ids": frame_ids,
+        "labels": image_labels,
+        "scores_by_source": scores_by_source,
+        "auroc_by_source": auroc_by_source,
+    }
 
 
 def build_parser():
@@ -263,6 +316,10 @@ def build_parser():
                         help="可选：保存结构化评估结果 JSON，便于批量汇总")
     parser.add_argument("--depth_peft_ckpt", type=str, default=None,
                         help="可选：DepthAffinePEFT checkpoint；提供时仅替换 depth teacher 调用链")
+    parser.add_argument("--score_source", type=str, default="fusion", choices=SCORE_SOURCES,
+                        help="顶层 AUROC / scores_csv 采用的分支来源，默认 fusion")
+    parser.add_argument("--scores_dir", type=str, default=None,
+                        help="可选：额外保存 rgb/depth/fusion 三份逐图分数 CSV 的目录")
     return parser
 
 
@@ -299,6 +356,7 @@ def evaluate_from_args(args):
         "view_id": int(args.view_id),
         "ckpt": str(args.ckpt),
         "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
+        "score_source_selected": str(getattr(args, "score_source", "fusion")),
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "ok",
@@ -313,6 +371,9 @@ def evaluate_from_args(args):
         "score_min": None,
         "score_max": None,
         "scores_csv": "",
+        "scores_csv_by_source": {source: "" for source in SCORE_SOURCES},
+        "auroc_by_source": {source: None for source in SCORE_SOURCES},
+        "frame_ids": [],
         "output_log": str(args.output_log) if args.output_log else "",
     }
 
@@ -327,6 +388,7 @@ def evaluate_from_args(args):
             append_eval_log(args.output_log, result)
             print(f"  appended to log: {args.output_log}")
         if args.result_json:
+            Path(args.result_json).parent.mkdir(parents=True, exist_ok=True)
             with open(args.result_json, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
         return result
@@ -382,13 +444,25 @@ def evaluate_from_args(args):
         )
 
     # ---- 3. 评估 ----
-    auroc, scores, labels = evaluate(
+    eval_payload = evaluate(
         teacher_rgb, teacher_depth, student_rgb, student_depth,
         test_loader, device,
         amp_dtype=amp_dtype, channels_last=args.channels_last,
     )
+    selected_source = result["score_source_selected"]
+    labels = eval_payload["labels"]
+    frame_ids = eval_payload["frame_ids"]
+    scores_by_source = eval_payload["scores_by_source"]
+    auroc_by_source = eval_payload["auroc_by_source"]
+    scores = scores_by_source[selected_source]
+    auroc = auroc_by_source[selected_source]
 
     result["auroc"] = float(auroc) if auroc is not None else None
+    result["auroc_by_source"] = {
+        source: (float(value) if value is not None else None)
+        for source, value in auroc_by_source.items()
+    }
+    result["frame_ids"] = list(frame_ids)
     result["num_images"] = int(len(scores))
     result["num_abnormal"] = int((labels == 1).sum()) if len(labels) else 0
     result["num_normal"] = int((labels == 0).sum()) if len(labels) else 0
@@ -399,10 +473,12 @@ def evaluate_from_args(args):
     print("\n" + "=" * 60)
     print(f"  Cam{args.view_id} Test Result")
     print("=" * 60)
+    print(f"  Score source: {selected_source}")
     if auroc is None:
         print(f"  AUROC: N/A (single-class test set)")
     else:
         print(f"  AUROC: {auroc:.4f}")
+    print(f"  AUROC by source: {format_metric_triplet(result['auroc_by_source'])}")
     print(f"  #images: {len(scores)}")
     if len(scores):
         print(f"  score range: [{scores.min():.4f}, {scores.max():.4f}]")
@@ -411,10 +487,32 @@ def evaluate_from_args(args):
 
     # 把分数落盘，便于后续画分布图
     if len(scores):
-        out_csv = args.scores_csv or args.ckpt.replace(".pth", "_test_scores.csv")
-        Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
-        write_scores_csv(out_csv, scores, labels)
+        if args.scores_dir:
+            scores_dir = Path(args.scores_dir)
+            scores_dir.mkdir(parents=True, exist_ok=True)
+            for source in SCORE_SOURCES:
+                source_path = scores_dir / f"scores_{source}.csv"
+                write_scores_csv(source_path, frame_ids, scores_by_source[source], labels)
+                result["scores_csv_by_source"][source] = str(source_path)
+
+        out_csv = args.scores_csv
+        if not out_csv:
+            out_csv = (
+                result["scores_csv_by_source"].get(selected_source)
+                or default_scores_csv_path(args.ckpt, selected_source)
+            )
+        out_csv_path = Path(out_csv)
+        out_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_selected = result["scores_csv_by_source"].get(selected_source, "")
+        same_path = (
+            existing_selected
+            and out_csv_path.resolve(strict=False) == Path(existing_selected).resolve(strict=False)
+        )
+        if not same_path:
+            write_scores_csv(out_csv_path, frame_ids, scores, labels)
         result["scores_csv"] = str(out_csv)
+        if not result["scores_csv_by_source"].get(selected_source):
+            result["scores_csv_by_source"][selected_source] = str(out_csv)
         print(f"  scores saved to: {out_csv}")
 
     if args.output_log and args.append_log:

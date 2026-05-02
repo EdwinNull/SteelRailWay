@@ -1,0 +1,7 @@
+view_id,config_name,ckpt,depth_peft_ckpt,auroc_rgb,auroc_depth,auroc_fusion,delta_rgb_vs_baseline,delta_depth_vs_baseline,delta_fusion_vs_baseline
+1,baseline,outputs\rail_all\Cam1\20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0\best_cam1.pth,,0.81818182,0.72727273,0.73636364,0.00000000,0.00000000,0.00000000
+1,with_cam4peft,outputs\rail_all\Cam1\20260430_233006_cam1_bs32_lr0.005_img512_ratio1.0\best_cam1.pth,outputs\rail_peft\cam4_p1_20260501_225618\final\final_peft_cam4.pth,0.79090909,0.70909091,0.73636364,-0.02727273,-0.01818182,0.00000000
+4,baseline,outputs\rail_all\Cam4\20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0\best_cam4.pth,,0.70000000,0.36250000,0.35000000,0.00000000,0.00000000,-0.00000000
+4,with_cam4peft,outputs\rail_all\Cam4\20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0\best_cam4.pth,outputs\rail_peft\cam4_p1_20260501_225618\final\final_peft_cam4.pth,0.60000000,0.67500000,0.68750000,-0.10000000,0.31250000,0.33750000
+5,baseline,outputs\rail_all\Cam5\20260501_022643_cam5_bs32_lr0.005_img512_ratio1.0\best_cam5.pth,,0.85714286,0.73469388,0.75510204,0.00000000,0.00000000,-0.00000000
+5,with_cam4peft,outputs\rail_all\Cam5\20260501_022643_cam5_bs32_lr0.005_img512_ratio1.0\best_cam5.pth,outputs\rail_peft\cam4_p1_20260501_225618\final\final_peft_cam4.pth,0.81632653,0.67346939,0.83673469,-0.04081633,-0.06122449,0.08163265

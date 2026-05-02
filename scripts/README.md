@@ -22,6 +22,6 @@
 - rail_all 批量补评估：`scripts/eval/eval_rail_all.py`
 - Cam4 P1 训练：`scripts/train/train_cam4_depth_p1_cv.py`
 - 扩充 Cam4 测试集：`scripts/data/build_augmented_cam4_testset.py`
-- 分支 AUROC 拆解：`scripts/diagnostics/eval_branch_auroc.py`
+- 分支 AUROC / 真隔离诊断：`scripts/diagnostics/eval_branch_auroc.py`
 - 整理 `outputs/rail_all`：`scripts/maintenance/organize_rail_all.py`
 - 整理 `outputs/rail_peft`：`scripts/maintenance/organize_rail_peft_runs.py`

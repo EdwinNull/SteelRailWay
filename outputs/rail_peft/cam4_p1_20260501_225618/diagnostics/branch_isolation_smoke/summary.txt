@@ -1,0 +1,27 @@
+Branch isolation diagnostics
+created_at: 2026-05-02 10:31:58
+runs_root: outputs/rail_all
+train_root: G:/SteelRailWay/data_20260327
+test_root: G:/SteelRailWay/rail_mvtec_gt_test
+views: 4
+device: cuda:0
+precision: fp32
+batch_size: 2
+assist_stats_batch_size: 16
+num_workers: 0
+use_patch: True
+assist_fill: train_mean
+assist_stats_dir: outputs\rail_peft\cam4_p1_20260501_225618\diagnostics\branch_isolation_smoke\reference_stats
+depth_peft_ckpt: outputs\rail_peft\cam4_p1_20260501_225618\final\final_peft_cam4.pth
+
+Cross-conditioned AUROC
+Cam4 baseline: rgb_cross=0.70000000, depth_cross=0.36250000, fusion=0.35000000, d_rgb_cross=0.00000000, d_depth_cross=0.00000000, d_fusion=-0.00000000
+Cam4 with_cam4peft: rgb_cross=0.60000000, depth_cross=0.67500000, fusion=0.68750000, d_rgb_cross=-0.10000000, d_depth_cross=0.31250000, d_fusion=0.33750000
+
+Isolated AUROC
+Cam4 baseline: rgb_isolated=0.73750000, depth_isolated=0.33750000, d_rgb_isolated=0.00000000, d_depth_isolated=0.00000000
+Cam4 with_cam4peft: rgb_isolated=0.73750000, depth_isolated=0.65000000, d_rgb_isolated=0.00000000, d_depth_isolated=0.31250000
+
+Interpretation
+- Cam4 baseline: depth_cross=0.3625, depth_isolated=0.3375，隔离后提升很小，说明 Depth 分支本体就偏弱，不只是被 crossmodal 污染。
+- Cam4 + PEFT: depth_cross Δ=+0.3125, depth_isolated Δ=+0.3125，收益大体同步，说明 PEFT 主要在修 Depth 分支本体。

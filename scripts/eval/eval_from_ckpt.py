@@ -37,10 +37,25 @@ from datasets.rail_dataset import RailDualModalDataset
 from models.trd.encoder import ResNet50Encoder
 from models.trd.decoder import ResNet50DualModalDecoder
 from eval.eval_utils import cal_anomaly_map
-from rail_peft import DepthAffinePEFT, DepthEncoderWithPEFT
+from rail_peft import (
+    DepthAffinePEFT,
+    DepthEncoderWithPEFT,
+    compute_teacher_feature_means,
+    expand_feature_means,
+    zeros_like_feature_list,
+)
 from sklearn.metrics import roc_auc_score
 
-SCORE_SOURCES = ("rgb", "depth", "fusion")
+CROSS_SOURCES = ("rgb", "depth", "fusion")
+ISOLATED_SOURCES = ("rgb_isolated", "depth_isolated")
+SCORE_SOURCES = CROSS_SOURCES + ISOLATED_SOURCES
+SOURCE_SEMANTICS = {
+    "rgb": "RGB branch score (cross-conditioned by current depth teacher features)",
+    "depth": "Depth branch score (cross-conditioned by current RGB teacher features)",
+    "fusion": "Fusion score from current rgb_cross + depth_cross anomaly maps",
+    "rgb_isolated": "RGB branch score with depth assist replaced by a fixed training-domain reference",
+    "depth_isolated": "Depth branch score with RGB assist replaced by a fixed training-domain reference",
+}
 
 
 try:
@@ -118,9 +133,9 @@ def format_metric(value):
     return f"{value:.4f}"
 
 
-def format_metric_triplet(metric_map):
+def format_metric_map(metric_map, sources=SCORE_SOURCES):
     parts = []
-    for source in SCORE_SOURCES:
+    for source in sources:
         parts.append(f"{source}={format_metric(metric_map.get(source))}")
     return ", ".join(parts)
 
@@ -150,6 +165,163 @@ def batch_map_to_scores(amap):
     if amap.ndim == 3:
         return amap.reshape(amap.shape[0], -1).max(axis=1)
     return np.array([amap.max()])
+
+
+def amp_context_factory(device, amp_dtype):
+    if amp_dtype is None or autocast is None:
+        return nullcontext
+    return lambda: autocast(device.type, enabled=True, dtype=amp_dtype)
+
+
+def assist_stats_filename(view_id, modality):
+    return f"cam{int(view_id)}_{modality}_train_mean.pt"
+
+
+def assist_stats_path(stats_dir, view_id, modality):
+    return Path(stats_dir) / assist_stats_filename(view_id, modality)
+
+
+def save_feature_mean_payload(path, feature_means, view_id, modality):
+    payload = {
+        "view_id": int(view_id),
+        "modality": str(modality),
+        "feature_means": [tensor.detach().cpu() for tensor in feature_means],
+    }
+    torch.save(payload, path)
+
+
+def load_feature_mean_payload(path, device):
+    payload = safe_load_ckpt(path, device)
+    if isinstance(payload, dict) and "feature_means" in payload:
+        feature_means = payload["feature_means"]
+    elif isinstance(payload, list):
+        feature_means = payload
+    else:
+        raise TypeError(f"Invalid feature-mean payload: {path}")
+    return [tensor.to(device=device, dtype=torch.float32) for tensor in feature_means]
+
+
+def build_assist_feature_list(modality, like_feats, assist_fill, assist_feature_means):
+    if assist_fill == "zeros":
+        return zeros_like_feature_list(like_feats)
+    if assist_fill != "train_mean":
+        raise ValueError(f"Unsupported assist_fill: {assist_fill}")
+    if not assist_feature_means or modality not in assist_feature_means:
+        raise RuntimeError(f"Missing train-mean assist features for modality: {modality}")
+    return expand_feature_means(assist_feature_means[modality], like_feats)
+
+
+def build_assist_stats_dataset(args):
+    return RailDualModalDataset(
+        train_root=args.train_root,
+        test_root=args.test_root,
+        view_id=args.view_id,
+        split="train",
+        img_size=args.img_size,
+        depth_norm=args.depth_norm,
+        use_patch=False,
+        train_sample_ratio=1.0,
+        train_sample_num=None,
+        train_val_test_split=[1.0, 0.0, 0.0],
+        sampling_mode="uniform_time",
+        preload=args.preload,
+        preload_workers=args.preload_workers,
+    )
+
+
+def build_assist_stats_loader(dataset, batch_size, num_workers, device):
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "drop_last": False,
+        "num_workers": num_workers,
+        "pin_memory": (device.type == "cuda"),
+        "persistent_workers": (num_workers > 0),
+    }
+    if num_workers > 0:
+        kwargs["prefetch_factor"] = 2
+    return DataLoader(
+        dataset,
+        **kwargs,
+    )
+
+
+def ensure_assist_feature_means(
+    args,
+    device,
+    amp_dtype,
+    teacher_rgb,
+    teacher_depth,
+):
+    assist_fill = getattr(args, "assist_fill", "train_mean")
+    assist_stats_dir = getattr(args, "assist_stats_dir", None)
+    if assist_fill == "zeros":
+        return {"rgb": None, "depth": None}
+
+    if assist_fill != "train_mean":
+        raise ValueError(f"Unsupported assist_fill: {assist_fill}")
+
+    stats_dir = Path(assist_stats_dir) if assist_stats_dir else None
+    if stats_dir:
+        stats_dir.mkdir(parents=True, exist_ok=True)
+
+    loaded = {}
+    missing_modalities = []
+    for modality in ("rgb", "depth"):
+        path = assist_stats_path(stats_dir, args.view_id, modality) if stats_dir else None
+        if path and path.exists():
+            print(f"Loading {modality} train-mean assist features: {path}")
+            loaded[modality] = load_feature_mean_payload(path, device)
+        else:
+            missing_modalities.append(modality)
+
+    if not missing_modalities:
+        return loaded
+
+    print(f"Computing train-mean assist features for Cam{args.view_id}: {', '.join(missing_modalities)}")
+    stats_dataset = build_assist_stats_dataset(args)
+    if len(stats_dataset) == 0:
+        raise RuntimeError(f"Cannot compute assist stats: empty train split for Cam{args.view_id}")
+    assist_stats_batch_size = int(
+        getattr(args, "assist_stats_batch_size", max(8, min(32, int(getattr(args, "batch_size", 8)))))
+    )
+    stats_loader = build_assist_stats_loader(
+        stats_dataset,
+        batch_size=assist_stats_batch_size,
+        num_workers=int(args.num_workers),
+        device=device,
+    )
+    amp_ctx = amp_context_factory(device, amp_dtype)
+
+    if "rgb" in missing_modalities:
+        loaded["rgb"] = compute_teacher_feature_means(
+            teacher_rgb,
+            stats_loader,
+            input_key="intensity",
+            device=device,
+            amp_context_factory=amp_ctx,
+            channels_last=bool(getattr(args, "channels_last", False)),
+        )
+        if stats_dir:
+            rgb_path = assist_stats_path(stats_dir, args.view_id, "rgb")
+            save_feature_mean_payload(rgb_path, loaded["rgb"], args.view_id, "rgb")
+            print(f"Saved rgb train-mean assist features: {rgb_path}")
+
+    if "depth" in missing_modalities:
+        loaded["depth"] = compute_teacher_feature_means(
+            teacher_depth,
+            stats_loader,
+            input_key="depth",
+            device=device,
+            amp_context_factory=amp_ctx,
+            channels_last=bool(getattr(args, "channels_last", False)),
+        )
+        if stats_dir:
+            depth_path = assist_stats_path(stats_dir, args.view_id, "depth")
+            save_feature_mean_payload(depth_path, loaded["depth"], args.view_id, "depth")
+            print(f"Saved depth train-mean assist features: {depth_path}")
+
+    return loaded
 
 
 def append_eval_log(log_file, result):
@@ -184,7 +356,7 @@ def append_eval_log(log_file, result):
     msg += f"  Best Val Loss: {best_val_loss_text}\n"
     msg += f"  Test AUROC: {auroc}\n"
     if result.get("auroc_by_source"):
-        msg += f"  AUROC by source: {format_metric_triplet(result['auroc_by_source'])}\n"
+        msg += f"  AUROC by source: {format_metric_map(result['auroc_by_source'])}\n"
     msg += f"  #patches: {result['num_patches']}\n"
     msg += f"  #images: {result['num_images']}\n"
     msg += f"  #abnormal: {result['num_abnormal']}, #normal: {result['num_normal']}\n"
@@ -199,8 +371,18 @@ def append_eval_log(log_file, result):
 
 
 @torch.no_grad()
-def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
-             test_loader, device, amp_dtype=None, channels_last=False):
+def evaluate(
+    teacher_rgb,
+    teacher_depth,
+    student_rgb,
+    student_depth,
+    test_loader,
+    device,
+    amp_dtype=None,
+    channels_last=False,
+    assist_fill="train_mean",
+    assist_feature_means=None,
+):
     """与 train_trd_rail.py 中的 evaluate 一致：patch 分数 max 聚合到原图。"""
     student_rgb.eval()
     student_depth.eval()
@@ -225,15 +407,44 @@ def evaluate(teacher_rgb, teacher_depth, student_rgb, student_depth,
         with amp_ctx:
             feat_t_rgb = teacher_rgb(rgb)
             feat_t_depth = teacher_depth(depth)
-            proj_d, proj_d_amply, feat_s_rgb, feat_s_rgb_am = student_rgb(feat_t_rgb, feat_t_depth)
-            proj_r, proj_r_amply, feat_s_depth, feat_s_depth_am = student_depth(feat_t_depth, feat_t_rgb)
+            _, _, feat_s_rgb, _ = student_rgb(feat_t_rgb, feat_t_depth)
+            _, _, feat_s_depth, _ = student_depth(feat_t_depth, feat_t_rgb)
+
+            feat_t_depth_assist = build_assist_feature_list(
+                "depth",
+                feat_t_depth,
+                assist_fill,
+                assist_feature_means,
+            )
+            feat_t_rgb_assist = build_assist_feature_list(
+                "rgb",
+                feat_t_rgb,
+                assist_fill,
+                assist_feature_means,
+            )
+            _, _, feat_s_rgb_isolated, _ = student_rgb(feat_t_rgb, feat_t_depth_assist)
+            _, _, feat_s_depth_isolated, _ = student_depth(feat_t_depth, feat_t_rgb_assist)
 
         amap_rgb, _ = cal_anomaly_map(feat_s_rgb, feat_t_rgb, out_size=(256, 256), amap_mode='mul')
         amap_depth, _ = cal_anomaly_map(feat_s_depth, feat_t_depth, out_size=(256, 256), amap_mode='mul')
+        amap_rgb_isolated, _ = cal_anomaly_map(
+            feat_s_rgb_isolated,
+            feat_t_rgb,
+            out_size=(256, 256),
+            amap_mode='mul',
+        )
+        amap_depth_isolated, _ = cal_anomaly_map(
+            feat_s_depth_isolated,
+            feat_t_depth,
+            out_size=(256, 256),
+            amap_mode='mul',
+        )
         amap_by_source = {
             "rgb": amap_rgb,
             "depth": amap_depth,
             "fusion": amap_rgb + amap_depth,
+            "rgb_isolated": amap_rgb_isolated,
+            "depth_isolated": amap_depth_isolated,
         }
         batch_scores = {
             source: batch_map_to_scores(amap)
@@ -319,7 +530,12 @@ def build_parser():
     parser.add_argument("--score_source", type=str, default="fusion", choices=SCORE_SOURCES,
                         help="顶层 AUROC / scores_csv 采用的分支来源，默认 fusion")
     parser.add_argument("--scores_dir", type=str, default=None,
-                        help="可选：额外保存 rgb/depth/fusion 三份逐图分数 CSV 的目录")
+                        help="可选：额外保存五份逐图分数 CSV 的目录")
+    parser.add_argument("--assist_fill", type=str, default="train_mean",
+                        choices=["train_mean", "zeros"],
+                        help="isolated 分支的辅助特征替代策略，默认 train_mean")
+    parser.add_argument("--assist_stats_dir", type=str, default=None,
+                        help="可选：训练域辅助特征均值的缓存目录")
     return parser
 
 
@@ -357,6 +573,8 @@ def evaluate_from_args(args):
         "ckpt": str(args.ckpt),
         "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
         "score_source_selected": str(getattr(args, "score_source", "fusion")),
+        "assist_fill_mode": str(getattr(args, "assist_fill", "train_mean")),
+        "assist_stats_dir": str(getattr(args, "assist_stats_dir", "") or ""),
         "train_root": str(args.train_root),
         "test_root": str(args.test_root),
         "status": "ok",
@@ -373,6 +591,7 @@ def evaluate_from_args(args):
         "scores_csv": "",
         "scores_csv_by_source": {source: "" for source in SCORE_SOURCES},
         "auroc_by_source": {source: None for source in SCORE_SOURCES},
+        "source_semantics": dict(SOURCE_SEMANTICS),
         "frame_ids": [],
         "output_log": str(args.output_log) if args.output_log else "",
     }
@@ -430,6 +649,14 @@ def evaluate_from_args(args):
     )
     print(f"Loaded epoch={result['best_epoch']}, best_val_loss={best_val_loss_text}")
 
+    assist_feature_means = ensure_assist_feature_means(
+        args,
+        device,
+        amp_dtype,
+        teacher_rgb,
+        teacher_depth,
+    )
+
     depth_peft_ckpt = getattr(args, "depth_peft_ckpt", None)
     if depth_peft_ckpt:
         peft, peft_meta = load_depth_peft(depth_peft_ckpt, device)
@@ -447,7 +674,10 @@ def evaluate_from_args(args):
     eval_payload = evaluate(
         teacher_rgb, teacher_depth, student_rgb, student_depth,
         test_loader, device,
-        amp_dtype=amp_dtype, channels_last=args.channels_last,
+        amp_dtype=amp_dtype,
+        channels_last=args.channels_last,
+        assist_fill=result["assist_fill_mode"],
+        assist_feature_means=assist_feature_means,
     )
     selected_source = result["score_source_selected"]
     labels = eval_payload["labels"]
@@ -478,7 +708,7 @@ def evaluate_from_args(args):
         print(f"  AUROC: N/A (single-class test set)")
     else:
         print(f"  AUROC: {auroc:.4f}")
-    print(f"  AUROC by source: {format_metric_triplet(result['auroc_by_source'])}")
+    print(f"  AUROC by source: {format_metric_map(result['auroc_by_source'])}")
     print(f"  #images: {len(scores)}")
     if len(scores):
         print(f"  score range: [{scores.min():.4f}, {scores.max():.4f}]")

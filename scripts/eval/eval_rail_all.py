@@ -32,7 +32,12 @@ from types import SimpleNamespace
 
 import torch
 
-from scripts.eval.eval_from_ckpt import append_eval_log, default_scores_csv_path, evaluate_from_args
+from scripts.eval.eval_from_ckpt import (
+    SCORE_SOURCES,
+    append_eval_log,
+    default_scores_csv_path,
+    evaluate_from_args,
+)
 
 
 def find_latest_ckpt(runs_root: Path, view_id: int) -> Path | None:
@@ -172,8 +177,14 @@ def build_parser():
     parser.add_argument("--depth_peft_map", type=str, default=None,
                         help='可选：JSON 文件或 JSON 字符串，如 {"4": "path/to/final_peft_cam4.pth"}')
     parser.add_argument("--score_source", type=str, default="fusion",
-                        choices=["fusion", "rgb", "depth"],
+                        choices=SCORE_SOURCES,
                         help="顶层 AUROC / scores_csv 使用的分支来源，默认 fusion")
+    parser.add_argument("--assist_fill", type=str, default="train_mean",
+                        choices=["train_mean", "zeros"],
+                        help="isolated 分支的辅助特征替代策略，默认 train_mean")
+    parser.add_argument("--assist_stats_dir", type=str, default=None,
+                        help="可选：训练域辅助特征均值缓存目录")
+    parser.add_argument("--assist_stats_batch_size", type=int, default=16)
     return parser
 
 
@@ -255,6 +266,9 @@ def main():
                 depth_peft_ckpt=depth_peft_ckpt,
                 score_source=args.score_source,
                 scores_dir=None,
+                assist_fill=args.assist_fill,
+                assist_stats_dir=args.assist_stats_dir,
+                assist_stats_batch_size=args.assist_stats_batch_size,
             )
 
             try:

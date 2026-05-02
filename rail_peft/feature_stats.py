@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Feature distribution helpers for depth PEFT training."""
+"""Feature distribution and feature-stat helpers for rail PEFT/diagnostics."""
 
 from __future__ import annotations
 
@@ -53,6 +53,66 @@ def compute_depth_feature_stats(
         for sq, n, mu in zip(sumsqs, counts, mu_list)
     ]
     return mu_list, var_list
+
+
+@torch.no_grad()
+def compute_teacher_feature_means(
+    teacher,
+    dataloader,
+    input_key: str,
+    device: torch.device | str = "cuda",
+    amp_context_factory=None,
+    channels_last: bool = False,
+) -> List[torch.Tensor]:
+    """Compute per-layer teacher feature means and keep them as [1, C, 1, 1]."""
+    teacher.eval()
+    device = torch.device(device)
+
+    sums: List[torch.Tensor] = []
+    counts: List[int] = []
+
+    for batch_idx, data in enumerate(dataloader):
+        model_input = data[input_key].to(device, non_blocking=True)
+        if channels_last and device.type == "cuda":
+            model_input = model_input.contiguous(memory_format=torch.channels_last)
+        amp_ctx = amp_context_factory() if amp_context_factory is not None else nullcontext()
+        with amp_ctx:
+            feats = teacher(model_input)
+
+        if batch_idx == 0:
+            for feat in feats:
+                channels = feat.shape[1]
+                sums.append(torch.zeros((1, channels, 1, 1), device=device, dtype=torch.float64))
+                counts.append(0)
+
+        for layer_idx, feat in enumerate(feats):
+            feat64 = feat.detach().to(dtype=torch.float64)
+            sums[layer_idx] += feat64.sum(dim=(0, 2, 3), keepdim=True)
+            counts[layer_idx] += feat.shape[0] * feat.shape[2] * feat.shape[3]
+
+    if not sums:
+        raise RuntimeError("Cannot compute teacher feature means from an empty dataloader.")
+
+    return [(s / n).to(dtype=torch.float32) for s, n in zip(sums, counts)]
+
+
+def expand_feature_means(
+    feature_means: Iterable[torch.Tensor],
+    like_feats: Iterable[torch.Tensor],
+) -> List[torch.Tensor]:
+    """Broadcast [1, C, 1, 1] means to match teacher feature shapes."""
+    expanded = []
+    for mean_feat, like_feat in zip(feature_means, like_feats):
+        mean_feat = mean_feat.to(device=like_feat.device, dtype=like_feat.dtype)
+        expanded.append(
+            mean_feat.expand(like_feat.shape[0], -1, like_feat.shape[2], like_feat.shape[3]).contiguous()
+        )
+    return expanded
+
+
+def zeros_like_feature_list(like_feats: Iterable[torch.Tensor]) -> List[torch.Tensor]:
+    """Create a zero-filled feature list with the same shapes as the reference list."""
+    return [torch.zeros_like(feat) for feat in like_feats]
 
 
 def fdm_loss(

@@ -23,6 +23,9 @@ DEFAULT_CKPT = (
     "outputs/rail_all/Cam4/20260501_014226_cam4_bs32_lr0.005_img512_ratio1.0/"
     "best_cam4.pth"
 )
+DEFAULT_PEFT_CKPT = (
+    "outputs/rail_peft/cam4_p1_20260501_225618/final/final_peft_cam4.pth"
+)
 
 SCHEME_LABELS = {
     "full": "完整模型",
@@ -44,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Evaluate Cam4 CF/CA post-hoc ablations and write a paper-ready summary."
     )
     parser.add_argument("--ckpt", type=str, default=DEFAULT_CKPT)
+    parser.add_argument("--depth_peft_ckpt", type=str, default=None,
+                        help="可选：DepthAffinePEFT checkpoint；提供时对同一 student ckpt 做 PEFT+CF/CA 消融")
     parser.add_argument("--train_root", type=str, default="data_20260327")
     parser.add_argument("--test_root", type=str, default="rail_mvtec_gt_test")
     parser.add_argument("--out_root", type=str, default="outputs/rail_ablation/cam4_cf_ca")
@@ -71,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict_full_baseline", action="store_true",
                         help="Exit non-zero if full mode does not reproduce the known Cam4 baseline.")
     parser.add_argument("--baseline_tolerance", type=float, default=1e-4)
+    parser.add_argument("--expected_full_rgb", type=float, default=None,
+                        help="可选：full 模式期望的 RGB AUROC；提供后用于复现检查")
+    parser.add_argument("--expected_full_depth", type=float, default=None,
+                        help="可选：full 模式期望的 Depth AUROC；提供后用于复现检查")
+    parser.add_argument("--expected_full_fusion", type=float, default=None,
+                        help="可选：full 模式期望的 Fusion AUROC；提供后用于复现检查")
     return parser
 
 
@@ -96,7 +107,7 @@ def make_eval_args(args: argparse.Namespace, mode: str, mode_dir: Path) -> Simpl
         append_log=False,
         scores_csv=None,
         result_json=str(mode_dir / "result.json"),
-        depth_peft_ckpt=None,
+        depth_peft_ckpt=args.depth_peft_ckpt,
         module_ablation=mode,
         score_source="fusion",
         scores_dir=str(mode_dir),
@@ -131,6 +142,7 @@ def write_summary(path: Path, rows: list[dict]) -> None:
         "num_normal",
         "note",
         "result_json",
+        "depth_peft_ckpt",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -138,15 +150,31 @@ def write_summary(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def check_full_baseline(rows: list[dict], tolerance: float) -> list[str]:
-    full = next((row for row in rows if row["module_ablation"] == "full"), None)
-    if not full:
-        return ["full mode was not evaluated"]
-    expected = {
+def resolve_expected_full(args: argparse.Namespace) -> dict[str, float] | None:
+    custom = {
+        "auroc_rgb": args.expected_full_rgb,
+        "auroc_depth": args.expected_full_depth,
+        "auroc_fusion": args.expected_full_fusion,
+    }
+    if all(value is not None for value in custom.values()):
+        return {k: float(v) for k, v in custom.items()}
+    if any(value is not None for value in custom.values()):
+        raise ValueError("expected_full_rgb/depth/fusion 必须同时提供，或全部不提供")
+    if args.depth_peft_ckpt:
+        return None
+    return {
         "auroc_rgb": 0.7000,
         "auroc_depth": 0.3625,
         "auroc_fusion": 0.3500,
     }
+
+
+def check_full_baseline(rows: list[dict], expected: dict[str, float] | None, tolerance: float) -> list[str]:
+    if expected is None:
+        return []
+    full = next((row for row in rows if row["module_ablation"] == "full"), None)
+    if not full:
+        return ["full mode was not evaluated"]
     warnings = []
     for key, expected_value in expected.items():
         value = float(full[key])
@@ -189,6 +217,7 @@ def main() -> None:
             "num_normal": result.get("num_normal", ""),
             "note": SCHEME_NOTES[mode],
             "result_json": str(out_root / mode / "result.json"),
+            "depth_peft_ckpt": result.get("depth_peft_ckpt", ""),
         })
 
     summary_csv = out_root / "summary.csv"
@@ -197,7 +226,8 @@ def main() -> None:
         json.dump(rows, f, ensure_ascii=False, indent=2)
     print(f"\nSummary CSV: {summary_csv}")
 
-    warnings = check_full_baseline(rows, args.baseline_tolerance)
+    expected_full = resolve_expected_full(args)
+    warnings = check_full_baseline(rows, expected_full, args.baseline_tolerance)
     if warnings:
         print("Baseline reproduction warnings:")
         for warning in warnings:

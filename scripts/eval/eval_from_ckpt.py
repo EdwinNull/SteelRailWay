@@ -50,6 +50,7 @@ MODULE_ABLATION_MODES = ("full", "no_cf", "no_ca", "no_cf_ca")
 CROSS_SOURCES = ("rgb", "depth", "fusion")
 ISOLATED_SOURCES = ("rgb_isolated", "depth_isolated")
 SCORE_SOURCES = CROSS_SOURCES + ISOLATED_SOURCES
+FUSION_RULES = ("sum", "max_norm")
 SOURCE_SEMANTICS = {
     "rgb": "RGB branch score (cross-conditioned by current depth teacher features)",
     "depth": "Depth branch score (cross-conditioned by current RGB teacher features)",
@@ -365,6 +366,7 @@ def append_eval_log(log_file, result):
         msg += f"Depth PEFT: {result['depth_peft_ckpt']}\n"
     msg += f"Module ablation: {result.get('module_ablation', 'full')}\n"
     msg += f"Score source: {result.get('score_source_selected', 'fusion')}\n"
+    msg += f"Fusion rule: {result.get('fusion_rule', 'sum')}\n"
     msg += f"Status: {status}"
     if reason:
         msg += f" ({reason})"
@@ -400,6 +402,7 @@ def evaluate(
     channels_last=False,
     assist_fill="train_mean",
     assist_feature_means=None,
+    fusion_rule="sum",
 ):
     """与 train_trd_rail.py 中的 evaluate 一致：patch 分数 max 聚合到原图。"""
     student_rgb.eval()
@@ -407,6 +410,10 @@ def evaluate(
 
     img_scores = {source: {} for source in SCORE_SOURCES}
     img_labels = {}
+    rgb_global_min = None
+    rgb_global_max = None
+    depth_global_min = None
+    depth_global_max = None
 
     for data in test_loader:
         rgb = data["intensity"].to(device, non_blocking=True)
@@ -457,10 +464,24 @@ def evaluate(
             out_size=(256, 256),
             amap_mode='mul',
         )
+        amap_rgb = np.asarray(amap_rgb, dtype=np.float32)
+        amap_depth = np.asarray(amap_depth, dtype=np.float32)
+        amap_rgb_isolated = np.asarray(amap_rgb_isolated, dtype=np.float32)
+        amap_depth_isolated = np.asarray(amap_depth_isolated, dtype=np.float32)
+        amap_fusion_sum = amap_rgb + amap_depth
+
+        batch_rgb_min = float(np.min(amap_rgb))
+        batch_rgb_max = float(np.max(amap_rgb))
+        batch_depth_min = float(np.min(amap_depth))
+        batch_depth_max = float(np.max(amap_depth))
+        rgb_global_min = batch_rgb_min if rgb_global_min is None else min(rgb_global_min, batch_rgb_min)
+        rgb_global_max = batch_rgb_max if rgb_global_max is None else max(rgb_global_max, batch_rgb_max)
+        depth_global_min = batch_depth_min if depth_global_min is None else min(depth_global_min, batch_depth_min)
+        depth_global_max = batch_depth_max if depth_global_max is None else max(depth_global_max, batch_depth_max)
         amap_by_source = {
             "rgb": amap_rgb,
             "depth": amap_depth,
-            "fusion": amap_rgb + amap_depth,
+            "fusion": amap_fusion_sum,
             "rgb_isolated": amap_rgb_isolated,
             "depth_isolated": amap_depth_isolated,
         }
@@ -497,10 +518,30 @@ def evaluate(
     scores_by_source = {}
     auroc_by_source = {}
     for source in SCORE_SOURCES:
-        image_scores = np.array(
-            [max(img_scores[source][fid]) for fid in frame_ids],
-            dtype=np.float64,
-        )
+        if source == "fusion" and fusion_rule == "max_norm":
+            rgb_denom = max((rgb_global_max or 0.0) - (rgb_global_min or 0.0), 1e-8)
+            depth_denom = max((depth_global_max or 0.0) - (depth_global_min or 0.0), 1e-8)
+            image_scores_list = []
+            for fid in frame_ids:
+                fusion_patch_scores = []
+                for rgb_score, depth_score in zip(img_scores["rgb"][fid], img_scores["depth"][fid]):
+                    rgb_norm_score = (
+                        0.0 if (rgb_global_max is None or rgb_global_max <= rgb_global_min)
+                        else (rgb_score - rgb_global_min) / rgb_denom
+                    )
+                    depth_norm_score = (
+                        0.0 if (depth_global_max is None or depth_global_max <= depth_global_min)
+                        else (depth_score - depth_global_min) / depth_denom
+                    )
+                    fusion_patch_scores.append(max(rgb_norm_score, depth_norm_score))
+                image_scores = np.array([max(fusion_patch_scores)], dtype=np.float64)
+                image_scores_list.append(image_scores[0])
+            image_scores = np.array(image_scores_list, dtype=np.float64)
+        else:
+            image_scores = np.array(
+                [max(img_scores[source][fid]) for fid in frame_ids],
+                dtype=np.float64,
+            )
         scores_by_source[source] = image_scores
         auroc_by_source[source] = (
             None if single_class else float(roc_auc_score(image_labels, image_scores))
@@ -549,6 +590,8 @@ def build_parser():
                         help="基于已有 ckpt 的推理期模块路径消融：full/no_cf/no_ca/no_cf_ca")
     parser.add_argument("--score_source", type=str, default="fusion", choices=SCORE_SOURCES,
                         help="顶层 AUROC / scores_csv 采用的分支来源，默认 fusion")
+    parser.add_argument("--fusion_rule", type=str, default="sum", choices=FUSION_RULES,
+                        help="fusion 分支的图级融合规则：sum=直接相加；max_norm=各分支先按全测试集 map-level 全局 min/max 归一化后逐像素 max")
     parser.add_argument("--scores_dir", type=str, default=None,
                         help="可选：额外保存五份逐图分数 CSV 的目录")
     parser.add_argument("--assist_fill", type=str, default="train_mean",
@@ -603,6 +646,7 @@ def evaluate_from_args(args):
         "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
         "module_ablation": str(getattr(args, "module_ablation", "full")),
         "score_source_selected": str(getattr(args, "score_source", "fusion")),
+        "fusion_rule": str(getattr(args, "fusion_rule", "sum")),
         "assist_fill_mode": str(getattr(args, "assist_fill", "train_mean")),
         "assist_stats_dir": str(getattr(args, "assist_stats_dir", "") or ""),
         "train_sample_ratio": float(getattr(args, "train_sample_ratio", 1.0)),
@@ -720,12 +764,14 @@ def evaluate_from_args(args):
         channels_last=args.channels_last,
         assist_fill=result["assist_fill_mode"],
         assist_feature_means=assist_feature_means,
+        fusion_rule=result["fusion_rule"],
     )
     selected_source = result["score_source_selected"]
     labels = eval_payload["labels"]
     frame_ids = eval_payload["frame_ids"]
     scores_by_source = eval_payload["scores_by_source"]
     auroc_by_source = eval_payload["auroc_by_source"]
+
     scores = scores_by_source[selected_source]
     auroc = auroc_by_source[selected_source]
 
@@ -747,6 +793,7 @@ def evaluate_from_args(args):
     print("=" * 60)
     print(f"  Module ablation: {result['module_ablation']}")
     print(f"  Score source: {selected_source}")
+    print(f"  Fusion rule: {result['fusion_rule']}")
     if auroc is None:
         print(f"  AUROC: N/A (single-class test set)")
     else:

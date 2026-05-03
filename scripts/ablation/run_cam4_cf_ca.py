@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["zscore", "minmax", "log"])
     parser.add_argument("--precision", type=str, default="fp32",
                         choices=["bf16", "fp16", "fp32"])
+    parser.add_argument("--fusion_rule", type=str, default="sum",
+                        choices=["sum", "max_norm"])
     parser.add_argument("--patch_size", type=int, default=900)
     parser.add_argument("--patch_stride", type=int, default=850)
     parser.add_argument("--assist_fill", type=str, default="zeros",
@@ -110,6 +112,7 @@ def make_eval_args(args: argparse.Namespace, mode: str, mode_dir: Path) -> Simpl
         depth_peft_ckpt=args.depth_peft_ckpt,
         module_ablation=mode,
         score_source="fusion",
+        fusion_rule=args.fusion_rule,
         scores_dir=str(mode_dir),
         assist_fill=args.assist_fill,
         assist_stats_dir=args.assist_stats_dir,

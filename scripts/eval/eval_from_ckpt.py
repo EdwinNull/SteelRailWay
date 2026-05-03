@@ -46,6 +46,7 @@ from rail_peft import (
 )
 from sklearn.metrics import roc_auc_score
 
+MODULE_ABLATION_MODES = ("full", "no_cf", "no_ca", "no_cf_ca")
 CROSS_SOURCES = ("rgb", "depth", "fusion")
 ISOLATED_SOURCES = ("rgb_isolated", "depth_isolated")
 SCORE_SOURCES = CROSS_SOURCES + ISOLATED_SOURCES
@@ -362,6 +363,7 @@ def append_eval_log(log_file, result):
     msg += f"Checkpoint: {result['ckpt']}\n"
     if result.get("depth_peft_ckpt"):
         msg += f"Depth PEFT: {result['depth_peft_ckpt']}\n"
+    msg += f"Module ablation: {result.get('module_ablation', 'full')}\n"
     msg += f"Score source: {result.get('score_source_selected', 'fusion')}\n"
     msg += f"Status: {status}"
     if reason:
@@ -543,6 +545,8 @@ def build_parser():
                         help="可选：保存结构化评估结果 JSON，便于批量汇总")
     parser.add_argument("--depth_peft_ckpt", type=str, default=None,
                         help="可选：DepthAffinePEFT checkpoint；提供时仅替换 depth teacher 调用链")
+    parser.add_argument("--module_ablation", type=str, default="full", choices=MODULE_ABLATION_MODES,
+                        help="基于已有 ckpt 的推理期模块路径消融：full/no_cf/no_ca/no_cf_ca")
     parser.add_argument("--score_source", type=str, default="fusion", choices=SCORE_SOURCES,
                         help="顶层 AUROC / scores_csv 采用的分支来源，默认 fusion")
     parser.add_argument("--scores_dir", type=str, default=None,
@@ -597,6 +601,7 @@ def evaluate_from_args(args):
         "view_id": int(args.view_id),
         "ckpt": str(args.ckpt),
         "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
+        "module_ablation": str(getattr(args, "module_ablation", "full")),
         "score_source_selected": str(getattr(args, "score_source", "fusion")),
         "assist_fill_mode": str(getattr(args, "assist_fill", "train_mean")),
         "assist_stats_dir": str(getattr(args, "assist_stats_dir", "") or ""),
@@ -656,8 +661,15 @@ def evaluate_from_args(args):
     for p in teacher_rgb.parameters(): p.requires_grad = False
     for p in teacher_depth.parameters(): p.requires_grad = False
 
-    student_rgb = ResNet50DualModalDecoder(pretrained=False).to(device).eval()
-    student_depth = ResNet50DualModalDecoder(pretrained=False).to(device).eval()
+    module_ablation = str(getattr(args, "module_ablation", "full"))
+    student_rgb = ResNet50DualModalDecoder(
+        pretrained=False,
+        module_ablation=module_ablation,
+    ).to(device).eval()
+    student_depth = ResNet50DualModalDecoder(
+        pretrained=False,
+        module_ablation=module_ablation,
+    ).to(device).eval()
 
     if args.channels_last and device.type == "cuda":
         teacher_rgb = teacher_rgb.to(memory_format=torch.channels_last)
@@ -677,6 +689,7 @@ def evaluate_from_args(args):
         else "N/A"
     )
     print(f"Loaded epoch={result['best_epoch']}, best_val_loss={best_val_loss_text}")
+    print(f"Module ablation: {module_ablation}")
 
     assist_feature_means = ensure_assist_feature_means(
         args,
@@ -732,6 +745,7 @@ def evaluate_from_args(args):
     print("\n" + "=" * 60)
     print(f"  Cam{args.view_id} Test Result")
     print("=" * 60)
+    print(f"  Module ablation: {result['module_ablation']}")
     print(f"  Score source: {selected_source}")
     if auroc is None:
         print(f"  AUROC: N/A (single-class test set)")

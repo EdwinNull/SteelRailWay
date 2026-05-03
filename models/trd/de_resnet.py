@@ -466,7 +466,7 @@ class ResNet_Skip(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward_fuse(self, x, x_assit, x_encoder=None, proj_filter=None):
+    def forward_fuse(self, x, x_assit, x_encoder=None, proj_filter=None, disable_ca: bool = False):
         """带 skip 融合的前向。
 
         参数：
@@ -475,27 +475,38 @@ class ResNet_Skip(nn.Module):
                        即 [proj_a_256, proj_b_512, proj_c_1024]）
             x_encoder, proj_filter : 预留参数，当前未启用（历史实验用于基于
                        余弦相似度的动态权重融合）
+            disable_ca : 推理期消融开关；为 True 时跳过解码阶段辅助 skip 融合，
+                         仅使用纯解码路径，保持已训练权重和张量形状不变。
         返回：
             融合后的解码特征列表 [feat_c, feat_b, feat_a]   ——用于与 Encoder 对齐
             未融合的纯解码特征列表 [feat_c_0, feat_b_0, feat_a_0] ——供多任务监督
         """
         # 第一级：解码深层，融合最深的辅助投影 x_assit[2]
         feature_a_0 = self.layer1(x)
-        w1 = torch.exp(self.w_a[0]) / torch.sum(torch.exp(self.w_a))  # softmax 权重 1
-        w2 = torch.exp(self.w_a[1]) / torch.sum(torch.exp(self.w_a))  # softmax 权重 2
-        feature_a = w1 * feature_a_0 + w2 * x_assit[2]
+        if disable_ca:
+            feature_a = feature_a_0
+        else:
+            w1 = torch.exp(self.w_a[0]) / torch.sum(torch.exp(self.w_a))  # softmax 权重 1
+            w2 = torch.exp(self.w_a[1]) / torch.sum(torch.exp(self.w_a))  # softmax 权重 2
+            feature_a = w1 * feature_a_0 + w2 * x_assit[2]
 
         # 第二级：解码中层，融合 x_assit[1]
         feature_b_0 = self.layer2(feature_a)
-        w1 = torch.exp(self.w_b[0]) / torch.sum(torch.exp(self.w_b))
-        w2 = torch.exp(self.w_b[1]) / torch.sum(torch.exp(self.w_b))
-        feature_b = w1 * feature_b_0 + w2 * x_assit[1]
+        if disable_ca:
+            feature_b = feature_b_0
+        else:
+            w1 = torch.exp(self.w_b[0]) / torch.sum(torch.exp(self.w_b))
+            w2 = torch.exp(self.w_b[1]) / torch.sum(torch.exp(self.w_b))
+            feature_b = w1 * feature_b_0 + w2 * x_assit[1]
 
         # 第三级：解码浅层，融合 x_assit[0]
         feature_c_0 = self.layer3(feature_b)
-        w1 = torch.exp(self.w_c[0]) / torch.sum(torch.exp(self.w_c))
-        w2 = torch.exp(self.w_c[1]) / torch.sum(torch.exp(self.w_c))
-        feature_c = w1 * feature_c_0 + w2 * x_assit[0]
+        if disable_ca:
+            feature_c = feature_c_0
+        else:
+            w1 = torch.exp(self.w_c[0]) / torch.sum(torch.exp(self.w_c))
+            w2 = torch.exp(self.w_c[1]) / torch.sum(torch.exp(self.w_c))
+            feature_c = w1 * feature_c_0 + w2 * x_assit[0]
 
         # ===== 下方大段注释为历史实验：基于 Encoder-解码 / Encoder-辅助的
         # 余弦相似度动态生成权重，效果不如上面的 softmax 学习权重，故保留注释做参考 =====

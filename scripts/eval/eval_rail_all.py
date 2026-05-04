@@ -32,6 +32,7 @@ from types import SimpleNamespace
 
 import torch
 
+from rail_cad.registry import build_active_depth_peft_map, load_registry
 from scripts.eval.eval_from_ckpt import (
     SCORE_SOURCES,
     append_eval_log,
@@ -176,6 +177,8 @@ def build_parser():
     parser.add_argument("--no_append_log", action="store_false", dest="append_log")
     parser.add_argument("--depth_peft_map", type=str, default=None,
                         help='可选：JSON 文件或 JSON 字符串，如 {"4": "path/to/final_peft_cam4.pth"}')
+    parser.add_argument("--cad_registry", type=str, default=None,
+                        help="可选：CAD registry.json 或其根目录；提供时按 registry 导出视角路由")
     parser.add_argument("--score_source", type=str, default="fusion",
                         choices=SCORE_SOURCES,
                         help="顶层 AUROC / scores_csv 使用的分支来源，默认 fusion")
@@ -200,7 +203,11 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     runs_root = Path(args.runs_root)
-    depth_peft_map = load_depth_peft_map(args.depth_peft_map)
+    if args.cad_registry:
+        registry = load_registry(args.cad_registry)
+        depth_peft_map = build_active_depth_peft_map(registry)
+    else:
+        depth_peft_map = load_depth_peft_map(args.depth_peft_map)
     runs_root.mkdir(parents=True, exist_ok=True)
     summary_root = Path(args.summary_dir) if args.summary_dir else runs_root / "_summaries"
     summary_root.mkdir(parents=True, exist_ok=True)
@@ -223,6 +230,8 @@ def main():
         f.write(f"Test root: {args.test_root}\n")
         f.write(f"Views: {' '.join(map(str, args.views))}\n\n")
         f.write(f"Score source: {args.score_source}\n\n")
+        if args.cad_registry:
+            f.write(f"CAD registry: {args.cad_registry}\n\n")
         if depth_peft_map:
             f.write(f"Depth PEFT map: {depth_peft_map}\n\n")
 
@@ -249,7 +258,7 @@ def main():
             log_file = run_dir / "training.log"
             scores_csv = Path(default_scores_csv_path(ckpt, args.score_source))
             result_json = run_dir / f"eval_cam{view_id}_result.json"
-            depth_peft_ckpt = depth_peft_map.get(view_id, "")
+            depth_peft_ckpt = "" if args.cad_registry else depth_peft_map.get(view_id, "")
 
             eval_args = SimpleNamespace(
                 ckpt=str(ckpt),
@@ -273,6 +282,7 @@ def main():
                 scores_csv=str(scores_csv),
                 result_json=str(result_json),
                 depth_peft_ckpt=depth_peft_ckpt,
+                cad_registry=args.cad_registry,
                 score_source=args.score_source,
                 scores_dir=None,
                 assist_fill=args.assist_fill,

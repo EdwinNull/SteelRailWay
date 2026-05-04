@@ -37,6 +37,7 @@ from datasets.rail_dataset import RailDualModalDataset
 from models.trd.encoder import ResNet50Encoder
 from models.trd.decoder import ResNet50DualModalDecoder
 from eval.eval_utils import cal_anomaly_map
+from rail_cad.registry import load_registry, resolve_active_peft_ckpt, resolve_artifact_path
 from rail_peft import (
     DepthAffinePEFT,
     DepthEncoderWithPEFT,
@@ -152,6 +153,26 @@ def load_depth_peft_from_joint_ckpt(payload_or_path, device):
     for param in peft.parameters():
         param.requires_grad_(False)
     return peft, metadata
+
+
+def resolve_depth_peft_from_cad_registry(cad_registry, *, task_id=None, view_id: int | None = None):
+    if not cad_registry:
+        return None, {}
+    registry = load_registry(cad_registry)
+    resolved = resolve_active_peft_ckpt(registry, task_id=task_id, view_id=view_id)
+    if not resolved:
+        return None, {
+            "source": "cad_registry",
+            "cad_registry": str(resolve_artifact_path(cad_registry)),
+            "matched": False,
+        }
+    peft_path = resolve_artifact_path(resolved)
+    return peft_path, {
+        "source": "cad_registry",
+        "cad_registry": str(resolve_artifact_path(cad_registry)),
+        "matched": True,
+        "task_id": str(task_id if task_id is not None else view_id),
+    }
 
 
 def resolve_amp_dtype(precision, device):
@@ -622,6 +643,8 @@ def build_parser():
                         help="可选：保存结构化评估结果 JSON，便于批量汇总")
     parser.add_argument("--depth_peft_ckpt", type=str, default=None,
                         help="可选：DepthAffinePEFT checkpoint；提供时仅替换 depth teacher 调用链")
+    parser.add_argument("--cad_registry", type=str, default=None,
+                        help="可选：CAD registry.json 或其根目录；未显式指定 depth_peft_ckpt 时按 task_id/view_id 路由")
     parser.add_argument("--module_ablation", type=str, default="full", choices=MODULE_ABLATION_MODES,
                         help="基于已有 ckpt 的推理期模块路径消融：full/no_cf/no_ca/no_cf_ca")
     parser.add_argument("--score_source", type=str, default="fusion", choices=SCORE_SOURCES,
@@ -680,6 +703,7 @@ def evaluate_from_args(args):
         "view_id": int(args.view_id),
         "ckpt": str(args.ckpt),
         "depth_peft_ckpt": str(getattr(args, "depth_peft_ckpt", "") or ""),
+        "cad_registry": str(getattr(args, "cad_registry", "") or ""),
         "module_ablation": str(getattr(args, "module_ablation", "full")),
         "score_source_selected": str(getattr(args, "score_source", "fusion")),
         "fusion_rule": str(getattr(args, "fusion_rule", "sum")),
@@ -779,18 +803,31 @@ def evaluate_from_args(args):
         teacher_depth,
     )
 
-    depth_peft_ckpt = getattr(args, "depth_peft_ckpt", None)
+    explicit_depth_peft_ckpt = getattr(args, "depth_peft_ckpt", None)
+    cad_registry = getattr(args, "cad_registry", None)
     joint_peft, joint_peft_meta = load_depth_peft_from_joint_ckpt(ckpt, device)
-    if depth_peft_ckpt:
-        peft, peft_meta = load_depth_peft(depth_peft_ckpt, device)
+    routed_depth_peft_ckpt = None
+    routed_meta = {}
+    if explicit_depth_peft_ckpt:
+        routed_depth_peft_ckpt = resolve_artifact_path(explicit_depth_peft_ckpt)
+        routed_meta = {"source": "explicit_depth_peft_ckpt"}
+    elif cad_registry:
+        routed_depth_peft_ckpt, routed_meta = resolve_depth_peft_from_cad_registry(
+            cad_registry,
+            task_id=getattr(args, "task_id", None),
+            view_id=int(args.view_id),
+        )
+
+    if routed_depth_peft_ckpt:
+        peft, peft_meta = load_depth_peft(str(routed_depth_peft_ckpt), device)
         teacher_depth = DepthEncoderWithPEFT(teacher_depth, peft).to(device).eval()
-        result["depth_peft_ckpt"] = str(depth_peft_ckpt)
+        result["depth_peft_ckpt"] = str(routed_depth_peft_ckpt)
         result["depth_peft_gain"] = float(peft.gain.detach().cpu())
         result["depth_peft_bias"] = float(peft.bias.detach().cpu())
-        result["depth_peft_meta"] = peft_meta
+        result["depth_peft_meta"] = {**routed_meta, **peft_meta}
         print(
             "Loaded Depth PEFT: "
-            f"{depth_peft_ckpt} (gain={peft.gain.item():.6f}, bias={peft.bias.item():.6f})"
+            f"{routed_depth_peft_ckpt} (gain={peft.gain.item():.6f}, bias={peft.bias.item():.6f})"
         )
     elif joint_peft is not None:
         teacher_depth = DepthEncoderWithPEFT(teacher_depth, joint_peft).to(device).eval()
@@ -802,6 +839,9 @@ def evaluate_from_args(args):
             "Loaded embedded Depth PEFT: "
             f"{args.ckpt} (gain={joint_peft.gain.item():.6f}, bias={joint_peft.bias.item():.6f})"
         )
+    elif cad_registry:
+        result["depth_peft_meta"] = routed_meta
+        print(f"No CAD PEFT route matched Cam{args.view_id}; falling back to baseline teacher_depth.")
 
     # ---- 3. 评估 ----
     eval_payload = evaluate(

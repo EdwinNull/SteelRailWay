@@ -36,6 +36,10 @@ DEFAULT_PEFT_CKPT = "outputs/rail_peft/cam4_p1_20260501_225618/final/final_peft_
 SCOPES = ("cf_only", "ca_only", "cf_ca")
 
 
+def log(message: str) -> None:
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train small-scope CF/CA repair adapters on Cam4 good samples after PEFT."
@@ -120,7 +124,7 @@ def make_loader(dataset, indices, batch_size, num_workers, device, shuffle=False
     )
 
 
-def build_models(args, device: torch.device):
+def build_models(args, device: torch.device, baseline_ckpt_cpu):
     teacher_rgb = ResNet50Encoder(pretrained=True).to(device).eval()
     teacher_depth_base = ResNet50Encoder(pretrained=True).to(device).eval()
     for p in teacher_rgb.parameters():
@@ -128,16 +132,15 @@ def build_models(args, device: torch.device):
     for p in teacher_depth_base.parameters():
         p.requires_grad_(False)
 
-    peft, peft_meta = load_depth_peft(args.depth_peft_ckpt, device)
+    peft, peft_meta = load_depth_peft(args.depth_peft_ckpt, torch.device("cpu"))
     for p in peft.parameters():
         p.requires_grad_(False)
     teacher_depth = DepthEncoderWithPEFT(teacher_depth_base, peft).to(device).eval()
 
     student_rgb = ResNet50DualModalDecoder(pretrained=False).to(device)
     student_depth = ResNet50DualModalDecoder(pretrained=False).to(device)
-    ckpt = safe_load_ckpt(args.ckpt, device)
-    student_rgb.load_state_dict(strip_prefix(ckpt["student_rgb"]))
-    student_depth.load_state_dict(strip_prefix(ckpt["student_depth"]))
+    student_rgb.load_state_dict(strip_prefix(baseline_ckpt_cpu["student_rgb"]))
+    student_depth.load_state_dict(strip_prefix(baseline_ckpt_cpu["student_depth"]))
 
     if args.channels_last and device.type == "cuda":
         teacher_rgb = teacher_rgb.to(memory_format=torch.channels_last)
@@ -145,7 +148,7 @@ def build_models(args, device: torch.device):
         student_rgb = student_rgb.to(memory_format=torch.channels_last)
         student_depth = student_depth.to(memory_format=torch.channels_last)
 
-    return teacher_rgb, teacher_depth, student_rgb, student_depth, ckpt, peft_meta
+    return teacher_rgb, teacher_depth, student_rgb, student_depth, baseline_ckpt_cpu, peft_meta
 
 
 def freeze_all(module: torch.nn.Module) -> None:
@@ -255,6 +258,7 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     amp_dtype = resolve_amp_dtype(args.precision, device)
 
+    log("Building Cam4 test dataset for repair training")
     dataset = build_test_dataset(args)
     good_ids = sorted([s["frame_id"] for s in dataset.samples if int(s["label"]) == 0])
     broken_ids = sorted([s["frame_id"] for s in dataset.samples if int(s["label"]) == 1])
@@ -266,14 +270,27 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     summary_rows = []
 
+    log(
+        f"Dataset ready: good={len(good_ids)}, broken={len(broken_ids)}, "
+        f"patches_per_image={dataset.num_patches}, scopes={list(args.scope)}, epochs={args.epochs}, folds={args.folds}"
+    )
+    log("Loading baseline checkpoint once on CPU (large file; first time may take a while)")
+    baseline_ckpt_cpu = safe_load_ckpt(args.ckpt, torch.device("cpu"))
+    log("Baseline checkpoint loaded")
+    log("First teacher build may download ImageNet weights to ~/.cache/torch/hub/checkpoints on cache miss")
+
     for scope in args.scope:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         scope_root = output_root / scope / f"cam4_{scope}_{timestamp}"
         scope_root.mkdir(parents=True, exist_ok=True)
+        log(f"Starting scope={scope} -> {scope_root}")
 
         cv_rows = []
         for fold_idx, test_good in enumerate(fold_parts, start=1):
-            teacher_rgb, teacher_depth, student_rgb, student_depth, ckpt_meta, peft_meta = build_models(args, device)
+            log(f"[{scope}] Building models for fold {fold_idx}/{args.folds}")
+            teacher_rgb, teacher_depth, student_rgb, student_depth, ckpt_meta, peft_meta = build_models(
+                args, device, baseline_ckpt_cpu
+            )
             freeze_all(student_rgb)
             freeze_all(student_depth)
             trainable_rgb = unfreeze_scope(student_rgb, scope)
@@ -286,6 +303,10 @@ def main() -> None:
             train_good = [fid for fid in good_ids if fid not in set(test_good)]
             train_indices = indices_for_frames(dataset, set(train_good))
             train_loader = make_loader(dataset, train_indices, args.batch_size, args.num_workers, device, shuffle=True)
+            log(
+                f"[{scope}] Fold {fold_idx}: train_good={len(train_good)}, heldout_good={len(test_good)}, "
+                f"train_patches={len(train_indices)}, batch_size={args.batch_size}"
+            )
 
             history = []
             for epoch in range(1, args.epochs + 1):
@@ -295,6 +316,7 @@ def main() -> None:
                 )
                 if epoch == 1 or epoch == args.epochs or epoch % args.log_every == 0:
                     history.append({"epoch": epoch, "loss": f"{avg_loss:.8f}"})
+                    log(f"[{scope}] Fold {fold_idx}: epoch {epoch}/{args.epochs}, loss={avg_loss:.8f}")
 
             fold_dir = scope_root / "cv" / f"fold{fold_idx}"
             fold_dir.mkdir(parents=True, exist_ok=True)
@@ -309,7 +331,12 @@ def main() -> None:
                 writer = csv.DictWriter(f, fieldnames=["epoch", "loss"])
                 writer.writeheader()
                 writer.writerows(history)
+            log(f"[{scope}] Fold {fold_idx}: training done, starting evaluation")
             eval_result = evaluate_repair(args, fold_ckpt, fold_dir / "eval")
+            log(
+                f"[{scope}] Fold {fold_idx}: eval done, "
+                f"fusion={float(eval_result['auroc_by_source']['fusion']):.8f}"
+            )
             cv_rows.append({
                 "scope": scope,
                 "fold": fold_idx,
@@ -321,7 +348,10 @@ def main() -> None:
                 "ckpt": str(fold_ckpt),
             })
 
-        teacher_rgb, teacher_depth, student_rgb, student_depth, ckpt_meta, peft_meta = build_models(args, device)
+        log(f"[{scope}] Building models for final train on all good samples")
+        teacher_rgb, teacher_depth, student_rgb, student_depth, ckpt_meta, peft_meta = build_models(
+            args, device, baseline_ckpt_cpu
+        )
         freeze_all(student_rgb)
         freeze_all(student_depth)
         trainable_rgb = unfreeze_scope(student_rgb, scope)
@@ -333,6 +363,7 @@ def main() -> None:
 
         final_train_indices = indices_for_frames(dataset, set(good_ids))
         final_loader = make_loader(dataset, final_train_indices, args.batch_size, args.num_workers, device, shuffle=True)
+        log(f"[{scope}] Final train: good_images={len(good_ids)}, train_patches={len(final_train_indices)}")
         final_history = []
         for epoch in range(1, args.epochs + 1):
             avg_loss = train_one_epoch(
@@ -341,6 +372,7 @@ def main() -> None:
             )
             if epoch == 1 or epoch == args.epochs or epoch % args.log_every == 0:
                 final_history.append({"epoch": epoch, "loss": f"{avg_loss:.8f}"})
+                log(f"[{scope}] Final: epoch {epoch}/{args.epochs}, loss={avg_loss:.8f}")
 
         final_dir = scope_root / "final"
         final_dir.mkdir(parents=True, exist_ok=True)
@@ -356,7 +388,13 @@ def main() -> None:
             writer.writeheader()
             writer.writerows(final_history)
 
+        log(f"[{scope}] Final training done, starting final evaluation")
         final_eval = evaluate_repair(args, final_ckpt, final_dir / "eval")
+        log(
+            f"[{scope}] Final eval done: rgb={float(final_eval['auroc_by_source']['rgb']):.8f}, "
+            f"depth={float(final_eval['auroc_by_source']['depth']):.8f}, "
+            f"fusion={float(final_eval['auroc_by_source']['fusion']):.8f}"
+        )
         summary_rows.append({
             "scheme": scope,
             "rgb_auroc": f"{float(final_eval['auroc_by_source']['rgb']):.8f}",
@@ -390,6 +428,7 @@ def main() -> None:
                 },
                 "peft_meta": peft_meta,
             }, f, ensure_ascii=False, indent=2)
+        log(f"[{scope}] Scope completed")
 
     out_summary = output_root / "summary.csv"
     with open(out_summary, "w", newline="", encoding="utf-8") as f:
@@ -401,7 +440,7 @@ def main() -> None:
         writer.writerows(summary_rows)
     with open(output_root / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary_rows, f, ensure_ascii=False, indent=2)
-    print(f"Repair summary CSV: {out_summary}")
+    log(f"Repair summary CSV: {out_summary}")
 
 
 if __name__ == "__main__":

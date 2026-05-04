@@ -118,6 +118,42 @@ def load_depth_peft(path, device):
     return peft, metadata
 
 
+def load_depth_peft_from_joint_ckpt(payload_or_path, device):
+    """Load DepthAffinePEFT params from a joint model checkpoint if present."""
+    payload = (
+        safe_load_ckpt(payload_or_path, device)
+        if isinstance(payload_or_path, (str, Path))
+        else payload_or_path
+    )
+    if not isinstance(payload, dict):
+        return None, {}
+
+    if "depth_peft" in payload and isinstance(payload["depth_peft"], dict):
+        state_dict = payload["depth_peft"]
+        metadata = {
+            "source": "joint_ckpt.depth_peft",
+            "gain": float(payload.get("depth_peft_gain")) if payload.get("depth_peft_gain") is not None else None,
+            "bias": float(payload.get("depth_peft_bias")) if payload.get("depth_peft_bias") is not None else None,
+        }
+    else:
+        state_dict = {
+            k.replace("_orig_mod.", "").replace("module.", "").replace("peft.", "").replace("depth_peft.", ""): v
+            for k, v in payload.items()
+            if k.replace("_orig_mod.", "").replace("module.", "").replace("peft.", "").replace("depth_peft.", "") in {"gain", "bias"}
+        }
+        metadata = {"source": "joint_ckpt.flat_keys"} if state_dict else {}
+
+    if not state_dict:
+        return None, {}
+
+    peft = DepthAffinePEFT().to(device)
+    peft.load_state_dict(state_dict, strict=True)
+    peft.eval()
+    for param in peft.parameters():
+        param.requires_grad_(False)
+    return peft, metadata
+
+
 def resolve_amp_dtype(precision, device):
     """评估阶段的 AMP 配置，与训练脚本保持一致。"""
     if device.type != "cuda" or autocast is None:
@@ -744,6 +780,7 @@ def evaluate_from_args(args):
     )
 
     depth_peft_ckpt = getattr(args, "depth_peft_ckpt", None)
+    joint_peft, joint_peft_meta = load_depth_peft_from_joint_ckpt(ckpt, device)
     if depth_peft_ckpt:
         peft, peft_meta = load_depth_peft(depth_peft_ckpt, device)
         teacher_depth = DepthEncoderWithPEFT(teacher_depth, peft).to(device).eval()
@@ -754,6 +791,16 @@ def evaluate_from_args(args):
         print(
             "Loaded Depth PEFT: "
             f"{depth_peft_ckpt} (gain={peft.gain.item():.6f}, bias={peft.bias.item():.6f})"
+        )
+    elif joint_peft is not None:
+        teacher_depth = DepthEncoderWithPEFT(teacher_depth, joint_peft).to(device).eval()
+        result["depth_peft_ckpt"] = f"{args.ckpt}::embedded"
+        result["depth_peft_gain"] = float(joint_peft.gain.detach().cpu())
+        result["depth_peft_bias"] = float(joint_peft.bias.detach().cpu())
+        result["depth_peft_meta"] = joint_peft_meta
+        print(
+            "Loaded embedded Depth PEFT: "
+            f"{args.ckpt} (gain={joint_peft.gain.item():.6f}, bias={joint_peft.bias.item():.6f})"
         )
 
     # ---- 3. 评估 ----

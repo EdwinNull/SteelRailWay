@@ -169,17 +169,23 @@ cython_debug/
 #.idea/
 
 # 数据目录 - 忽略data目录下的所有更新
-data/
+
+# 参考目录
+reference/
+thesis/
+figures/
 
 # 模型文件 - 忽略所有模型权重文件
 *.pt
 *.pth
 *.ckpt
 *.safetensors
+*.md
 
 # 训练输出 - 忽略模型但保留日志
 outputs/**/*.pt
 outputs/**/*.pth
 outputs/**/*.ckpt
-outputs/rail_peft
+outputs/rail_peft/
+outputs/thesis_figures/
 # 注意：outputs/**/*.log 会被保留（已移除全局 *.log 规则）

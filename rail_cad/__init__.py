@@ -1,7 +1,6 @@
 """Continual-adaptation helpers for task-aware per-view DepthAffinePEFT."""
 
 from .metrics import build_matrix_payload, compute_continual_metrics, write_matrix_csv
-from .p1 import add_p1_training_args, run_p1_experiment
 from .registry import (
     build_active_depth_peft_map,
     export_active_depth_peft_map,
@@ -19,6 +18,18 @@ from .registry import (
     task_id_to_view_id,
     update_task_baseline_eval,
 )
+
+
+def add_p1_training_args(*args, **kwargs):
+    from .p1 import add_p1_training_args as _add_p1_training_args
+
+    return _add_p1_training_args(*args, **kwargs)
+
+
+def run_p1_experiment(*args, **kwargs):
+    from .p1 import run_p1_experiment as _run_p1_experiment
+
+    return _run_p1_experiment(*args, **kwargs)
 
 __all__ = [
     "add_p1_training_args",

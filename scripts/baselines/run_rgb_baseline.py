@@ -652,7 +652,7 @@ def fit_fastflow(config: ProtocolConfig, datasets: dict, args) -> dict:
                 residual = head(feat)
                 score_map = (residual.float() ** 2).mean(dim=1, keepdim=True)
             score_map = F.interpolate(score_map, size=(config.img_size, config.img_size), mode="bilinear", align_corners=False)
-            score_map = score_map.squeeze(1).detach().cpu().numpy()
+            score_map = score_map.squeeze(1).detach().cpu().float().numpy()
             patch_score_chunks.append(score_map.reshape(len(frame_ids), -1))
             patch_gt_chunks.append(gt.reshape(len(frame_ids), -1))
             for idx, frame_id in enumerate(frame_ids):
@@ -800,7 +800,7 @@ def fit_draem(config: ProtocolConfig, datasets: dict, args) -> dict:
                 recon_img = recon(image)
                 seg_logits = seg(torch.cat([image, recon_img], dim=1))
                 score_map = torch.sigmoid(seg_logits).squeeze(1)
-            score_map = score_map.detach().cpu().numpy()
+            score_map = score_map.detach().cpu().float().numpy()
             patch_score_chunks.append(score_map.reshape(len(frame_ids), -1))
             patch_gt_chunks.append(gt.reshape(len(frame_ids), -1))
             for idx, frame_id in enumerate(frame_ids):

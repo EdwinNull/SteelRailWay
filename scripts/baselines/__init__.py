@@ -1,1 +1,1 @@
-# Baseline methods for horizontal comparison (PatchCore, PaDiM).
+"""Unified RGB-only baseline experiment entrypoints and helpers."""

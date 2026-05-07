@@ -45,6 +45,7 @@ ARROW_COLOR = "#334155"
 GRAY = "#64748b"
 DARK = "#0f172a"
 WHITE = "#ffffff"
+FONT_STACK = "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', Arial, Helvetica, sans-serif"
 
 
 class SVG:
@@ -125,7 +126,7 @@ class SVG:
     def text(self, x: float, y: float, text: str,
              font_size: float = 12, fill: str = DARK,
              weight: str = "normal", anchor: str = "middle",
-             class_: str = "", font_family: str = "Arial, Helvetica, sans-serif",
+             class_: str = "", font_family: str = FONT_STACK,
              **extra) -> ET.Element:
         attrs = {
             "x": str(x), "y": str(y),

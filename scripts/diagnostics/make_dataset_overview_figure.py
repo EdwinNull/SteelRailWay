@@ -19,6 +19,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 from PIL import Image
 
@@ -48,6 +49,26 @@ FRAMES: list[dict] = [
     {"cam": "cam5", "label": "broken", "frame": "20251112_191827_Cam5_00067",
      "cam_label": "Cam5", "row": "Abnormal"},
 ]
+
+
+def configure_matplotlib_fonts() -> None:
+    """Prefer a CJK-capable font so Chinese titles/captions render correctly."""
+    candidates = [
+        "Microsoft YaHei",
+        "SimHei",
+        "SimSun",
+        "Noto Sans CJK SC",
+        "Arial Unicode MS",
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["font.sans-serif"] = [name, "DejaVu Sans"]
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+
+    plt.rcParams["axes.unicode_minus"] = False
 
 
 def load_rgb(cam: str, label: str, frame: str) -> np.ndarray:
@@ -96,6 +117,7 @@ def overlay_mask(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 def make_figure(output_path: Path | None = None, dpi: int = 300) -> plt.Figure:
     """Build the 6-panel dataset sample grid."""
+    configure_matplotlib_fonts()
     n_cols = 3
     n_rows = 2
     # Each cell has 2 sub-panels: RGB | Depth

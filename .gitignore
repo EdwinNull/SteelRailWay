@@ -171,9 +171,7 @@ cython_debug/
 # 数据目录 - 忽略data目录下的所有更新
 
 # 参考目录
-reference/
-thesis/
-figures/
+article/
 
 # 模型文件 - 忽略所有模型权重文件
 *.pt

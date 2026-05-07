@@ -1,1 +1,1 @@
-"""Unified RGB-only baseline experiment entrypoints and helpers."""
+"""Unified RGB and RGB+Depth baseline experiment entrypoints and helpers."""

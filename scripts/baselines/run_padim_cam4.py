@@ -19,16 +19,15 @@ sys.path.insert(0, str(_PROJ_ROOT))
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from scipy.spatial.distance import mahalanobis
 from sklearn.metrics import roc_auc_score
 
-from run_patchcore_cam4 import (
-    RailRGBDataset, extract_features, device as _unused,
+from scripts.baselines.run_patchcore_cam4 import (
+    RailRGBDataset, extract_features,
 )
 
 
 def estimate_gaussians(features: dict[int, list[np.ndarray]],
-                       layers: tuple = (2, 3)) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+                       layers: tuple = (1, 2)) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """Estimate per-patch multivariate Gaussian (mean, inv_cov)."""
     params = {}
     for layer_idx in layers:
@@ -54,9 +53,9 @@ def estimate_gaussians(features: dict[int, list[np.ndarray]],
 
 def score_padim(encoder: torch.nn.Module, loader: DataLoader,
                 gaussian_params: dict[int, tuple[np.ndarray, np.ndarray]],
-                device: torch.device, layers: tuple = (2, 3),
+                device: torch.device, layers: tuple = (1, 2),
                 ) -> tuple[list[float], list[np.ndarray], list[str]]:
-    """Compute PaDiM anomaly scores using Mahalanobis distance."""
+    """Compute PaDiM anomaly scores using vectorized Mahalanobis distance."""
     encoder.eval()
     image_scores: list[float] = []
     pixel_maps: list[np.ndarray] = []
@@ -74,13 +73,14 @@ def score_padim(encoder: torch.nn.Module, loader: DataLoader,
                 B, Cf, H, W_ = f.shape
                 assert C == Cf and P == H * W_, f"Shape mismatch: means {P}x{C}, feat {H}x{W_}x{Cf}"
 
-                # Reshape test: [B, H*W, C]
-                f_patches = f.transpose(0, 2, 3, 1).reshape(B, H * W, C)
-                scores = np.zeros((B, H * W))
-                for b in range(B):
-                    for p in range(H * W_):
-                        diff = f_patches[b, p] - means[p]
-                        scores[b, p] = np.sqrt(diff @ inv_covs[p] @ diff)
+                f_patches = f.transpose(0, 2, 3, 1).reshape(B, H * W_, C)  # [B, P, C]
+                diff = f_patches - means[None, :, :]  # [B, P, C]
+                # Vectorized Mahalanobis: for each (b,p), diff[b,p] @ inv_covs[p] @ diff[b,p]
+                # = sum_c(diff[b,p,c] * sum_c'(inv_covs[p,c,c'] * diff[b,p,c']))
+                # = einsum('bpc,pcd,bpd->bp', diff, inv_covs, diff)
+                scores = np.sqrt(np.maximum(
+                    np.einsum('bpc,pcd,bpd->bp', diff, inv_covs, diff), 0.0
+                ))  # [B, P]
                 score_map = scores.reshape(B, H, W_)
                 batch_maps.append(score_map)
 

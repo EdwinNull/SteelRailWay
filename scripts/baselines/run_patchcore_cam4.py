@@ -34,7 +34,7 @@ from models.trd.encoder import ResNet50Encoder
 
 
 def extract_features(encoder: torch.nn.Module, loader: DataLoader,
-                     device: torch.device, layers: tuple = (2, 3),
+                     device: torch.device, layers: tuple = (1, 2),
                      max_samples: int = 200) -> dict[int, list[np.ndarray]]:
     """Extract multi-layer features from normal samples."""
     encoder.eval()
@@ -75,9 +75,9 @@ def build_memory_bank(features: dict[int, list[np.ndarray]],
 
 def score_patchcore(encoder: torch.nn.Module, loader: DataLoader,
                     memory: dict[int, np.ndarray],
-                    device: torch.device, layers: tuple = (2, 3),
-                    k: int = 5) -> tuple[list[float], list[np.ndarray], list[str]]:
-    """Compute PatchCore anomaly scores."""
+                    device: torch.device, layers: tuple = (1, 2),
+                    k: int = 5, chunk_size: int = 256) -> tuple[list[float], list[np.ndarray], list[str]]:
+    """Compute PatchCore anomaly scores with chunked distance computation."""
     encoder.eval()
     image_scores: list[float] = []
     pixel_maps: list[np.ndarray] = []
@@ -86,28 +86,31 @@ def score_patchcore(encoder: torch.nn.Module, loader: DataLoader,
     with torch.no_grad():
         for rgb, _, _, fids in loader:
             rgb = rgb.to(device)
-            feats = encoder(rgb)  # list of tensors
+            feats = encoder(rgb)
             batch_maps = []
             for layer_idx in layers:
                 f = feats[layer_idx].cpu().numpy()  # [B, C, H, W]
                 B, C, H, W = f.shape
                 mem = memory[layer_idx]  # [M, C]
-                # Reshape test features: [B, H, W, C] → [B*H*W, C]
                 f_flat = f.transpose(0, 2, 3, 1).reshape(B, H * W, C)
-                # Compute distances to k nearest neighbors in memory
+
                 scores = np.zeros((B, H * W))
                 for b in range(B):
-                    dists = np.linalg.norm(
-                        f_flat[b][:, None, :] - mem[None, :, :], axis=-1)
-                    topk = np.sort(dists, axis=-1)[:, :k]
-                    scores[b] = np.mean(topk, axis=-1)
-                # Reshape to [B, H, W]
+                    n_patches = H * W
+                    # Chunked: avoid (n_patches, M, C) memory explosion
+                    for start in range(0, n_patches, chunk_size):
+                        end = min(start + chunk_size, n_patches)
+                        chunk = f_flat[b, start:end]  # [chunk, C]
+                        # dists: [chunk, M] via linalg.norm along last axis
+                        diff = chunk[:, None, :] - mem[None, :, :]  # [chunk, M, C]
+                        dists = np.sqrt(np.sum(diff * diff, axis=-1))  # [chunk, M]
+                        topk = np.sort(dists, axis=-1)[:, :k]
+                        scores[b, start:end] = np.mean(topk, axis=-1)
+
                 score_map = scores.reshape(B, H, W)
-                # Upsample to original resolution
                 batch_maps.append(score_map)
 
-            # Average across layers
-            combined = np.mean(batch_maps, axis=0)  # [B, H, W]
+            combined = np.mean(batch_maps, axis=0)
             for b in range(B):
                 smap = combined[b]
                 image_scores.append(float(np.max(smap)))

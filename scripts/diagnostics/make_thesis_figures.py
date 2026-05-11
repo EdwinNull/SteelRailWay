@@ -45,60 +45,119 @@ def draw_mismatch_phase() -> None:
     points = [
         {
             "name": "peft_full",
+            "short": "P1 only",
             "x": -0.2125,
             "y": 0.0375,
-            "iso": "(0.8125, 0.6375)",
+            "rgb_iso": 0.8125,
+            "depth_iso": 0.6375,
+            "fusion": 0.6875,
             "mode": "Lagged mismatch",
             "color": "#dc2626",
             "marker": "o",
             "size": 90,
-            "offset": (0.010, -0.030),
+            "offset": (-0.075, 0.060),
         },
         {
             "name": "no_cf_ca",
+            "short": "No CF/CA",
             "x": 0.0,
             "y": 0.0,
-            "iso": "(0.8625, 0.7125)",
+            "rgb_iso": 0.8625,
+            "depth_iso": 0.7125,
+            "fusion": 0.7375,
             "mode": "Reference",
             "color": "#64748b",
             "marker": "o",
             "size": 80,
-            "offset": (0.012, -0.035),
+            "offset": (0.030, 0.030),
         },
         {
             "name": "cf_ca_repair",
+            "short": "CF/CA repair",
             "x": 0.0,
             "y": 0.1375,
-            "iso": "(0.6750, 0.6625)",
+            "rgb_iso": 0.6750,
+            "depth_iso": 0.6625,
+            "fusion": 0.7750,
             "mode": "Healthy synergy",
             "color": "#16a34a",
             "marker": "*",
             "size": 260,
-            "offset": (0.014, 0.010),
+            "offset": (0.035, 0.025),
         },
         {
             "name": "peft_full_then_cf_ca",
+            "short": "Continue",
             "x": 0.3250,
             "y": 0.2500,
-            "iso": "(0.3625, 0.5875)",
+            "rgb_iso": 0.3625,
+            "depth_iso": 0.5875,
+            "fusion": 0.6500,
             "mode": "Over-coupling",
             "color": "#7c3aed",
             "marker": "o",
             "size": 95,
-            "offset": (-0.235, 0.018),
+            "offset": (-0.205, 0.030),
         },
     ]
 
-    fig, ax = plt.subplots(figsize=(8.4, 5.8))
-    ax.set_xlim(-0.30, 0.35)
-    ax.set_ylim(-0.10, 0.30)
+    by_name = {p["name"]: p for p in points}
+    fig, (ax, ax_iso) = plt.subplots(
+        1,
+        2,
+        figsize=(12.0, 4.8),
+        gridspec_kw={"width_ratios": [1.16, 1.0]},
+    )
+    fig.suptitle(
+        "Isolated AUROC diagnostic view for Cam4",
+        fontsize=12.5,
+        weight="bold",
+        y=0.985,
+    )
 
-    ax.add_patch(Rectangle((-0.30, -0.10), 0.30, 0.40, color="#fee2e2", alpha=0.45, zorder=0))
-    ax.add_patch(Rectangle((0.00, -0.02), 0.16, 0.20, color="#dcfce7", alpha=0.55, zorder=0))
-    ax.add_patch(Rectangle((0.16, 0.14), 0.19, 0.16, color="#ede9fe", alpha=0.55, zorder=0))
-    ax.axhline(0, color="#475569", linewidth=1.1)
-    ax.axvline(0, color="#475569", linewidth=1.1)
+    ax.set_xlim(-0.28, 0.35)
+    ax.set_ylim(-0.04, 0.29)
+    ax.set_title("(a) Cross-modal contribution plane", loc="left", fontsize=11, weight="bold")
+    ax.add_patch(Rectangle((-0.28, -0.04), 0.28, 0.33, color="#fee2e2", alpha=0.38, zorder=0))
+    ax.add_patch(Rectangle((-0.018, 0.085), 0.10, 0.11, color="#dcfce7", alpha=0.58, zorder=0))
+    ax.add_patch(Rectangle((0.18, 0.13), 0.17, 0.16, color="#ede9fe", alpha=0.62, zorder=0))
+    ax.axhline(0, color="#475569", linewidth=1.0)
+    ax.axvline(0, color="#475569", linewidth=1.0)
     ax.grid(True, color="#cbd5e1", linewidth=0.8, alpha=0.75)
+
+    ax.text(-0.265, 0.265, "RGB harmed\n($\\Delta RGB<0$)", color="#991b1b", fontsize=9, weight="bold")
+    ax.text(0.012, 0.172, "Healthy\nsynergy", color="#166534", fontsize=9, weight="bold")
+    ax.text(0.205, 0.265, "Check isolated\ncapacity", color="#5b21b6", fontsize=9, weight="bold")
+
+    def draw_route(src: str, dst: str, color: str, label: str, text_xy: tuple[float, float], rad: float) -> None:
+        p0 = by_name[src]
+        p1 = by_name[dst]
+        ax.annotate(
+            "",
+            xy=(p1["x"], p1["y"]),
+            xytext=(p0["x"], p0["y"]),
+            arrowprops=dict(
+                arrowstyle="->",
+                color=color,
+                lw=2.0,
+                shrinkA=8,
+                shrinkB=9,
+                connectionstyle=f"arc3,rad={rad}",
+            ),
+            zorder=2,
+        )
+        ax.text(
+            text_xy[0],
+            text_xy[1],
+            label,
+            fontsize=8.5,
+            color=color,
+            weight="bold",
+            bbox=dict(facecolor="white", edgecolor=color, boxstyle="round,pad=0.25", alpha=0.92),
+        )
+
+    draw_route("peft_full", "cf_ca_repair", "#16a34a", "targeted\nCF/CA repair", (-0.12, 0.125), 0.18)
+    draw_route("peft_full", "peft_full_then_cf_ca", "#7c3aed", "continue\njoint tuning", (0.085, 0.230), -0.11)
 
     for p in points:
         ax.scatter(
@@ -113,32 +172,78 @@ def draw_mismatch_phase() -> None:
             label=p["mode"],
         )
         dx, dy = p["offset"]
-        ax.text(
-            p["x"] + dx,
-            p["y"] + dy,
-            f"{p['name']}\niso={p['iso']}",
+        if p["name"] == "peft_full":
+            note = "P1 only\nRGB cross is polluted"
+        elif p["name"] == "cf_ca_repair":
+            note = "CF/CA repair\nDepth helped, RGB not harmed"
+        elif p["name"] == "peft_full_then_cf_ca":
+            note = "Continuation\npositive $\\Delta$ hides iso collapse"
+        else:
+            note = "No CF/CA\nreference"
+        ax.annotate(
+            note,
+            xy=(p["x"], p["y"]),
+            xytext=(p["x"] + dx, p["y"] + dy),
+            arrowprops=dict(arrowstyle="-", color=p["color"], lw=1.0),
             fontsize=9,
             color="#0f172a",
             ha="left",
             va="center",
+            bbox=dict(facecolor="white", edgecolor=p["color"], boxstyle="round,pad=0.25", alpha=0.93),
         )
 
-    handles, labels = ax.get_legend_handles_labels()
-    unique = dict(zip(labels, handles))
-    ax.legend(
-        unique.values(),
-        unique.keys(),
-        loc="upper left",
-        frameon=True,
-        framealpha=0.95,
-        fontsize=9,
-    )
-    ax.set_title("Cross-modal Path Diagnosis Phase Map", fontsize=15, weight="bold", pad=12)
     ax.set_xlabel(r"$\Delta RGB = AUROC_{cross} - AUROC_{isolated}$", fontsize=11)
     ax.set_ylabel(r"$\Delta Depth = AUROC_{cross} - AUROC_{isolated}$", fontsize=11)
-    ax.text(-0.285, 0.275, "Mismatch zone", color="#991b1b", fontsize=10, weight="bold")
-    ax.text(0.020, 0.165, "Healthy zone", color="#166534", fontsize=10, weight="bold")
-    ax.text(0.188, 0.285, "Over-coupling zone", color="#5b21b6", fontsize=10, weight="bold")
+
+    ax_iso.set_title("(b) Isolated capacity check", loc="left", fontsize=11, weight="bold")
+    labels_short = [p["short"] for p in points]
+    x = np.arange(len(points))
+    width = 0.30
+    rgb_iso = np.array([p["rgb_iso"] for p in points], dtype=float)
+    depth_iso = np.array([p["depth_iso"] for p in points], dtype=float)
+    fusion = np.array([p["fusion"] for p in points], dtype=float)
+    ax_iso.axhspan(0.30, 0.60, color="#fee2e2", alpha=0.23, zorder=0)
+    ax_iso.bar(x - width / 2, rgb_iso, width, color="#38bdf8", edgecolor="#0369a1", label="RGB isolated")
+    ax_iso.bar(x + width / 2, depth_iso, width, color="#fbbf24", edgecolor="#b45309", label="Depth isolated")
+    ax_iso.plot(x, fusion, color="#111827", marker="D", markersize=5.5, linewidth=1.5, label="Fusion AUROC")
+    ax_iso.axhline(0.50, color="#ef4444", linestyle="--", linewidth=1.0)
+    ax_iso.text(3.35, 0.508, "0.5 random", color="#ef4444", fontsize=8, va="bottom", ha="right")
+
+    for idx, value in enumerate(rgb_iso):
+        ax_iso.text(idx - width / 2, value + 0.012, f"{value:.3f}", ha="center", va="bottom", fontsize=7.5)
+    for idx, value in enumerate(depth_iso):
+        ax_iso.text(idx + width / 2, value + 0.012, f"{value:.3f}", ha="center", va="bottom", fontsize=7.5)
+    for idx, value in enumerate(fusion):
+        ax_iso.text(idx, value - 0.038, f"{value:.3f}", ha="center", va="top", fontsize=7.5, color="#111827")
+
+    ax_iso.annotate(
+        "over-coupling:\nRGB isolated collapses",
+        xy=(3 - width / 2, rgb_iso[3]),
+        xytext=(2.20, 0.435),
+        arrowprops=dict(arrowstyle="->", color="#7c3aed", lw=1.4),
+        fontsize=8.5,
+        color="#5b21b6",
+        weight="bold",
+        bbox=dict(facecolor="white", edgecolor="#7c3aed", boxstyle="round,pad=0.25", alpha=0.94),
+    )
+    ax_iso.annotate(
+        "best fusion\nwithout iso collapse",
+        xy=(2, fusion[2]),
+        xytext=(1.36, 0.825),
+        arrowprops=dict(arrowstyle="->", color="#16a34a", lw=1.4),
+        fontsize=8.5,
+        color="#166534",
+        weight="bold",
+        bbox=dict(facecolor="white", edgecolor="#16a34a", boxstyle="round,pad=0.25", alpha=0.94),
+    )
+    ax_iso.set_xticks(x)
+    ax_iso.set_xticklabels(labels_short, fontsize=9)
+    ax_iso.set_ylim(0.30, 0.90)
+    ax_iso.set_ylabel("AUROC", fontsize=11)
+    ax_iso.grid(axis="y", color="#cbd5e1", linewidth=0.8, alpha=0.75)
+    ax_iso.legend(loc="lower left", fontsize=8.5, frameon=True, framealpha=0.95)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.93), w_pad=2.0)
     save_all(fig, "fig4_1_mismatch_phase")
 
 
